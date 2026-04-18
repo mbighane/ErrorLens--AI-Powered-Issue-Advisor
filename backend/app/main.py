@@ -5,7 +5,10 @@ from .api.issues import router as issues_router
 import asyncio
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+INDEX_REFRESH_SECONDS = 48 * 3600  # 48 hours
 
 app = FastAPI(
     title="ErrorLens API",
@@ -35,8 +38,23 @@ async def auto_ingest_if_empty():
     empty = (bugs_emb.exists() and bugs_emb.stat().st_size == 0) or \
             (wiki_emb.exists() and wiki_emb.stat().st_size == 0)
 
+    # Check age of the oldest index file
+    stale = False
+    if not missing and not empty:
+        oldest_mtime = min(
+            bugs_emb.stat().st_mtime,
+            wiki_emb.stat().st_mtime,
+        )
+        age_seconds = time.time() - oldest_mtime
+        if age_seconds > INDEX_REFRESH_SECONDS:
+            age_hours = age_seconds / 3600
+            print(f"⚠️  Vector index is stale ({age_hours:.1f}h old, threshold 48h). Re-ingesting...")
+            stale = True
+
     if missing or empty:
         print("⚠️  Vector index is empty or missing. Running ingest scripts automatically...")
+    
+    if missing or empty or stale:
         loop = asyncio.get_event_loop()
         for script in ["scripts/ingest_bugs.py", "scripts/ingest_wiki.py"]:
             print(f"▶️  Running {script}...")
@@ -52,7 +70,8 @@ async def auto_ingest_if_empty():
             else:
                 print(f"❌ {script} failed:\n{result.stderr}")
     else:
-        print("✅ Vector index already populated. Skipping ingest.")
+        age_hours = (time.time() - min(bugs_emb.stat().st_mtime, wiki_emb.stat().st_mtime)) / 3600
+        print(f"✅ Vector index is fresh ({age_hours:.1f}h old). Skipping ingest.")
 
 @app.get("/")
 async def root():
