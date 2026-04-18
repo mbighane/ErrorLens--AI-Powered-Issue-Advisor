@@ -28,9 +28,16 @@ graph TB
         ADOC[AzureDevOpsConnector]
     end
 
+    subgraph RAG[RAG Pipeline - Vector Embeddings]
+        LV[LocalVectorSearchService<br/>OpenAI text-embedding-3-small<br/>numpy cosine similarity]
+        RV[RedisVectorSearchService<br/>Redis Stack fallback]
+        VI[(Vector Index<br/>data/vector_index/<br/>bugs_embeddings.npy<br/>wiki_embeddings.npy)]
+        ING[Ingest Scripts<br/>scripts/ingest_bugs.py<br/>scripts/ingest_wiki.py]
+    end
+
     subgraph DM[Data and External Systems]
         ADO[(Azure DevOps<br/>Work Items + Wiki Repos)]
-        OPENAI[OpenAI API]
+        OPENAI[OpenAI API<br/>GPT + Embeddings]
         SC[Issue Schemas<br/>backend/app/schemas/issue_schemas.py]
     end
 
@@ -40,10 +47,21 @@ graph TB
     ORCH --> N1 --> N2 --> N3 --> N4 --> N5 --> N6
     CP -. checkpoint state .- ORCH
 
-    N2 --> BA --> BS --> ADOC --> ADO
-    N3 --> WA --> WS --> ADOC
+    N2 --> BA --> BS
+    N3 --> WA --> WS
     N4 --> CA
     N5 --> RA
+
+    BS --> LV
+    WS --> LV
+    LV -- embed query --> OPENAI
+    OPENAI -- query embedding --> LV
+    LV <--> VI
+    LV -- fallback --> RV
+    BS --> ADOC --> ADO
+    WS --> ADOC
+    ING -- index bugs/wiki --> LV
+    ADO -- raw data --> ING
 
     BA --> OPENAI
     WA --> OPENAI
