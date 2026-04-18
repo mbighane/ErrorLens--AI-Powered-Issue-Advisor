@@ -47,22 +47,6 @@ class SuggestedFix(BaseModel):
     priority: Literal["high", "medium", "low"] = "medium"
 
 
-class MigrationConfig(BaseModel):
-    name: str = Field(..., min_length=3)
-    strategy: Literal["safe", "rolling", "blue_green"] = "safe"
-    validate_before_apply: bool = True
-    rollback_enabled: bool = True
-    timeout_seconds: int = Field(default=120, ge=10)
-    max_retries: int = Field(default=2, ge=0, le=10)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class MigrationPlan(BaseModel):
-    config: MigrationConfig
-    steps: List[str] = Field(default_factory=list)
-    risk_level: Literal["low", "medium", "high"] = "medium"
-
-
 class IssueSolveResponse(BaseModel):
     analysis: str
     similar_bugs: List[BugResult] = Field(default_factory=list)
