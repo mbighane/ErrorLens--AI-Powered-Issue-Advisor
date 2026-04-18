@@ -3,17 +3,7 @@ graph TB
     ST[Streamlit UI<br/>frontend/pages/streamlit_app.py]
     API[FastAPI App<br/>backend/app/main.py]
     EP[POST /api/issues/solve<br/>backend/app/api/issues.py]
-    ORCH[OrchestratorAgent<br/>backend/app/agents/orchestrator_agent.py]
-
-    subgraph LG[LangGraph Workflow]
-        N1[analyze_query]
-        N2[run_bug_analysis]
-        N3[run_wiki_knowledge]
-        N4[run_context_analysis]
-        N5[run_recommendations]
-        N6[assemble_response]
-        CP[MemorySaver Checkpointer]
-    end
+    ORCH[OrchestratorAgent<br/>LangGraph StateGraph + MemorySaver]
 
     subgraph AG[Specialized Agents]
         BA[BugAnalysisAgent]
@@ -44,19 +34,19 @@ graph TB
     U --> ST --> API --> EP --> ORCH
     EP -. request/response validation .- SC
 
-    ORCH --> N1 --> N2 --> N3 --> N4 --> N5 --> N6
-    CP -. checkpoint state .- ORCH
+    ORCH --> BA
+    ORCH --> WA
+    ORCH --> CA
+    ORCH --> RA
 
-    N2 --> BA --> BS
-    N3 --> WA --> WS
-    N4 --> CA
-    N5 --> RA
+    BA --> BS
+    WA --> WS
 
-    BA -- similar_bugs --> N6
-    WA -- wiki_pages --> N6
-    CA -- context_analysis --> N6
-    RA -- root_causes + suggested_fixes --> N6
-    N6 -- assembles IssueSolveResponse --> ORCH
+    BA -- similar_bugs --> ORCH
+    WA -- wiki_pages --> ORCH
+    CA -- context_analysis --> ORCH
+    RA -- root_causes + suggested_fixes --> ORCH
+    ORCH -- assembles IssueSolveResponse --> EP
 
     BS --> LV
     WS --> LV
@@ -71,4 +61,4 @@ graph TB
 
     RA --> OPENAI
     OPENAI -- GPT fix suggestions --> RA
-    N6 --> EP --> API --> ST --> U
+    EP --> API --> ST --> U
