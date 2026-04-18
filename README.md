@@ -216,7 +216,10 @@ graph TB
   BA --> OPENAI
   WA --> OPENAI
   RA --> OPENAI
-  N6 --> EP
+  OPENAI -- AI response --> BA
+  OPENAI -- AI response --> WA
+  OPENAI -- AI response --> RA
+  N6 --> EP --> API --> ST --> U
 ```
 
 ## Agent Roles and Workflows
