@@ -52,6 +52,12 @@ graph TB
     N4 --> CA
     N5 --> RA
 
+    BA -- similar_bugs --> N6
+    WA -- wiki_pages --> N6
+    CA -- context_analysis --> N6
+    RA -- root_causes + suggested_fixes --> N6
+    N6 -- assembles IssueSolveResponse --> ORCH
+
     BS --> LV
     WS --> LV
     LV -- embed query --> OPENAI
@@ -63,10 +69,6 @@ graph TB
     ING -- index bugs/wiki --> LV
     ADO -- raw data --> ING
 
-    BA --> OPENAI
-    WA --> OPENAI
     RA --> OPENAI
-    OPENAI -- AI response --> BA
-    OPENAI -- AI response --> WA
-    OPENAI -- AI response --> RA
+    OPENAI -- GPT fix suggestions --> RA
     N6 --> EP --> API --> ST --> U
