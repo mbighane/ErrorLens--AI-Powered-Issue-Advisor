@@ -1,0 +1,15 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+streamlit==1.29.0
+redis==5.0.1
+openai==1.109.1
+llama-index-core==0.14.20
+llama-index-vector-stores-redis==0.8.0
+llama-index-embeddings-openai==0.6.0
+langgraph==0.2.55
+python-dotenv==1.0.0
+azure-devops==7.1.0b4
+pytest==7.4.3
+pytest-asyncio==0.21.1
+setuptools==80.9.0
+numpy>=1.26.0

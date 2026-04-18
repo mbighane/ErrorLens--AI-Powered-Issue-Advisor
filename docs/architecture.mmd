@@ -1,0 +1,51 @@
+graph TB
+    U[Developer/User]
+    ST[Streamlit UI<br/>frontend/pages/streamlit_app.py]
+    API[FastAPI App<br/>backend/app/main.py]
+    EP[POST /api/issues/solve<br/>backend/app/api/issues.py]
+    ORCH[OrchestratorAgent<br/>backend/app/agents/orchestrator_agent.py]
+
+    subgraph LG[LangGraph Workflow]
+        N1[analyze_query]
+        N2[run_bug_analysis]
+        N3[run_wiki_knowledge]
+        N4[run_context_analysis]
+        N5[run_recommendations]
+        N6[assemble_response]
+        CP[MemorySaver Checkpointer]
+    end
+
+    subgraph AG[Specialized Agents]
+        BA[BugAnalysisAgent]
+        WA[WikiKnowledgeAgent]
+        CA[IntegrationContextAgent]
+        RA[RecommendationAgent]
+    end
+
+    subgraph SV[Services]
+        BS[ADOBugSearchService]
+        WS[ADOWikiSearchService]
+        ADOC[AzureDevOpsConnector]
+    end
+
+    subgraph DM[Data and External Systems]
+        ADO[(Azure DevOps<br/>Work Items + Wiki Repos)]
+        OPENAI[OpenAI API]
+        SC[Issue Schemas<br/>backend/app/schemas/issue_schemas.py]
+    end
+
+    U --> ST --> API --> EP --> ORCH
+    EP -. request/response validation .- SC
+
+    ORCH --> N1 --> N2 --> N3 --> N4 --> N5 --> N6
+    CP -. checkpoint state .- ORCH
+
+    N2 --> BA --> BS --> ADOC --> ADO
+    N3 --> WA --> WS --> ADOC
+    N4 --> CA
+    N5 --> RA
+
+    BA --> OPENAI
+    WA --> OPENAI
+    RA --> OPENAI
+    N6 --> EP
