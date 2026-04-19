@@ -10,7 +10,7 @@ class ADOWikiSearchService:
         self.local_vector_service = LocalVectorSearchService()
         self.redis_vector_service = RedisVectorSearchService()
 
-    async def search_wiki_pages(self, query: str, top_k: int = 5) -> List[WikiResult]:
+    async def search_wiki_pages(self, query: str, top_k: int = 10) -> List[WikiResult]:
         """
         Search for relevant wiki pages in Azure DevOps.
         Priority:
@@ -25,8 +25,11 @@ class ADOWikiSearchService:
         if self.local_vector_service.enabled and self.local_vector_service.has_wiki_indexed():
             try:
                 wiki_pages = self.local_vector_service.search_wiki_pages(query, top_k)
+                # Keep only the highest-scoring result to avoid surfacing loosely
+                # related sections from the same parent page.
                 if wiki_pages:
-                    print(f"[VectorSearch] Local index returned {len(wiki_pages)} wiki page(s) for query.")
+                    wiki_pages = [max(wiki_pages, key=lambda p: p.get("similarity_score", 0))]
+                    print(f"[VectorSearch] Local index returned top-1 wiki section (score={wiki_pages[0].get('similarity_score', 0):.4f}) for query.")
             except Exception as exc:
                 print(f"[VectorSearch] Local wiki search failed: {exc}")
                 wiki_pages = []

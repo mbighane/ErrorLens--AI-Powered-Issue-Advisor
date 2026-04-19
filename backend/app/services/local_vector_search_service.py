@@ -210,25 +210,109 @@ class LocalVectorSearchService:
         self._save_index(combined_emb, combined_meta, emb_path, meta_path)
         return len(new_items)
 
+    def _expand_query_wiki(self, query: str) -> str:
+        """
+        Wiki-specific query expansion using a documentation/lessons-learned prompt
+        instead of the bug-report-focused prompt used for bug searches.
+        Falls back to the original query if GPT is unavailable.
+        """
+        try:
+            response = self._client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a technical documentation search assistant. "
+                            "Given a query about a software issue, rewrite it as a focused search string "
+                            "suited for finding wiki pages, lessons learned, troubleshooting guides, "
+                            "and runbooks. Focus on the specific symptom and its closest technical domain. "
+                            "Do NOT add generic infrastructure, database, or platform terms unless they "
+                            "are central to the symptom itself. "
+                            "Keep it under 40 words. Return only the expanded text, no explanation."
+                        ),
+                    },
+                    {"role": "user", "content": query},
+                ],
+                temperature=0.2,
+                max_tokens=80,
+            )
+            expanded = response.choices[0].message.content.strip()
+            print(f"[VectorSearch] Wiki query expanded: '{query}' -> '{expanded}'")
+            return expanded
+        except Exception as exc:
+            print(f"[VectorSearch] Wiki query expansion failed, using original: {exc}")
+            return query
+
     def _search_items(
         self,
         query:     str,
         emb_path:  Path,
         meta_path: Path,
         top_k:     int,
+        min_score: float = 0.0,
+        wiki_query: bool = False,
     ) -> List[Dict[str, Any]]:
         if not self.enabled or not emb_path.exists() or not meta_path.exists():
             return []
 
         embeddings, metadata = self._load_index(emb_path, meta_path)
-        q_vec  = self._embed_query(query)
+        if wiki_query:
+            expanded = self._expand_query_wiki(query)
+            vectors = self._embed_texts([expanded])
+            q_vec = np.array(vectors[0], dtype=np.float32)
+        else:
+            q_vec = self._embed_query(query)
         scores = self._cosine_sim(q_vec, embeddings)
+
+        # For wiki queries: apply a keyword relevance bonus using both section title
+        # and content. When all sections share the same parent page (e.g. a single
+        # lessons-learned page), cosine scores cluster tightly (~0.02 spread) and
+        # expanded-query vocabulary can inflate unrelated sections.
+        # We check if meaningful query tokens — plus curated synonyms for common
+        # concepts (whitespace, text, handling) — appear in the section text.
+        if wiki_query:
+            stopwords = {"in", "the", "a", "an", "of", "for", "to", "after",
+                         "from", "with", "and", "or", "is", "are", "be", "not",
+                         "that", "this", "it", "on", "by", "at", "as", "was",
+                         "remain", "remains", "remain"}
+            # Synonym expansion for common symptom concepts
+            _SYNONYMS: Dict[str, List[str]] = {
+                "spaces":  ["space", "whitespace", "trim", "blank", "padding"],
+                "text":    ["string", "char", "character", "str"],
+                "fields":  ["field", "input", "textbox", "form"],
+                "date":    ["datetime", "datdiff", "dateadd", "timestamp"],
+                "rounding":["round", "banker", "midpoint", "decimal"],
+                "com":     ["ole", "activex", "interop", "dispatch"],
+                "grid":    ["datagrid", "gridview", "listview", "table"],
+            }
+            query_tokens = set(_re.findall(r"[a-z]+", query.lower())) - stopwords
+            # Expand tokens with synonyms
+            expanded_tokens: set = set(query_tokens)
+            for tok in list(query_tokens):
+                for base, syns in _SYNONYMS.items():
+                    if tok == base or tok in syns:
+                        expanded_tokens.update([base] + syns)
+            for i, item in enumerate(metadata):
+                sec_text = (
+                    item.get("section_title", "") + " " + item.get("content", "")
+                ).lower()
+                sec_tokens = set(_re.findall(r"[a-z]+", sec_text))
+                overlap = expanded_tokens & sec_tokens
+                if overlap:
+                    # +0.04 per matching token, capped at +0.15
+                    bonus = min(0.04 * len(overlap), 0.15)
+                    scores[i] = float(scores[i]) + bonus
+                    print(f"[VectorSearch] Content bonus +{bonus:.2f} for section "
+                          f"'{item.get('section_title')}' (matched: {sorted(overlap)[:5]})")
+                else:
+                    scores[i] = float(scores[i])
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         results: List[Dict[str, Any]] = []
         for idx in top_indices:
             score = float(scores[idx])
-            if score > 0:
+            if score > min_score:
                 results.append({**metadata[idx], "similarity_score": score})
         return results
 
@@ -420,37 +504,100 @@ class LocalVectorSearchService:
     # Wiki index API  (mirrors RedisVectorSearchService)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _split_wiki_sections(page: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Split a wiki page into one item per markdown heading section.
+        Each returned dict carries: title, path, url, content, section_title, section_id.
+        If the page has no headings, a single item representing the whole page is returned.
+        """
+        content = (page.get("content", "") or "").strip()
+        path    = page.get("path", "")
+        title   = page.get("title", path.strip("/") or "Wiki")
+        url     = page.get("url", "")
+
+        # Match markdown headings (##, ###, ─── underline, or emoji-prefixed lines)
+        heading_re = _re.compile(
+            r'^(?:#{1,6}\s+(.+)|([^\n]+)\n[-=]{3,})',
+            _re.MULTILINE,
+        )
+
+        matches = list(heading_re.finditer(content))
+        if not matches:
+            # No headings — return the page as-is
+            return [dict(page, section_title="", section_id=path)]
+
+        sections: List[Dict[str, Any]] = []
+        # Text before the first heading (preamble)
+        preamble = content[: matches[0].start()].strip()
+        if preamble:
+            sections.append({
+                "title":         title,
+                "path":          path,
+                "url":           url,
+                "content":       preamble,
+                "section_title": "",
+                "section_id":    path,
+            })
+
+        for i, m in enumerate(matches):
+            sec_heading = (m.group(1) or m.group(2) or "").strip()
+            start       = m.end()
+            end         = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            sec_content = content[start:end].strip()
+            section_id  = f"{path}#{sec_heading}"
+            sections.append({
+                "title":         title,
+                "path":          path,
+                "url":           url,
+                "content":       sec_content,
+                "section_title": sec_heading,
+                "section_id":    section_id,
+            })
+
+        return sections
+
     def index_wiki_pages(self, pages: List[Dict[str, Any]]) -> int:
         """
-        Embed and persist a list of wiki page dicts.
+        Embed and persist a list of wiki page dicts, splitting each page into
+        per-section chunks so each section gets its own focused embedding vector.
         Each page dict must have at least: title.
-        Optional rich fields: path, content.
-        Returns the number of newly indexed items (0 if all duplicates).
+        Optional rich fields: path, content, url.
+        Returns the number of newly indexed section items (0 if all duplicates).
         """
-        def text_of(page: Dict) -> str:
-            parts = [
-                f"Title: {page.get('title', '')}",
-                f"Path: {page.get('path', '')}",
-                f"Content: {(page.get('content', '') or '')[:2000]}",
-            ]
-            return "\n".join(p for p in parts if p.split(": ", 1)[-1].strip())
+        # Expand pages → sections
+        section_items: List[Dict[str, Any]] = []
+        for page in pages:
+            section_items.extend(self._split_wiki_sections(page))
 
-        def page_id(page: Dict) -> str:
-            return str(page.get("id") or page.get("path") or page.get("title", ""))
+        def text_of(item: Dict) -> str:
+            sec = item.get("section_title", "")
+            parts = [
+                f"Title: {item.get('title', '')}",
+                f"Section: {sec}" if sec else "",
+                f"Path: {item.get('path', '')}",
+                f"Content: {(item.get('content', '') or '')[:2000]}",
+            ]
+            return "\n".join(p for p in parts if p.strip() and p.split(": ", 1)[-1].strip())
+
+        def section_id(item: Dict) -> str:
+            return item.get("section_id") or str(item.get("path") or item.get("title", ""))
 
         return self._index_items(
-            pages,
+            section_items,
             text_fn=text_of,
-            id_fn=page_id,
+            id_fn=section_id,
             emb_path=self._wiki_emb_path,
             meta_path=self._wiki_meta_path,
         )
 
-    def search_wiki_pages(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_wiki_pages(self, query: str, top_k: int = 5, min_score: float = 0.28) -> List[Dict[str, Any]]:
         """Search the local wiki embedding index for the closest matches."""
         return self._search_items(
             query,
             self._wiki_emb_path,
             self._wiki_meta_path,
             top_k,
+            min_score=min_score,
+            wiki_query=True,
         )
