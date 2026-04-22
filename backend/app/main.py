@@ -64,6 +64,7 @@ async def auto_ingest_if_empty():
         loop = asyncio.get_event_loop()
         _env = os.environ.copy()
         _env["PYTHONPATH"] = str(PROJECT_ROOT)
+        _env["PYTHONIOENCODING"] = "utf-8"
         for script in ["scripts/ingest_bugs.py", "scripts/ingest_wiki.py"]:
             print(f"▶️  Running {script}...")
             result = await loop.run_in_executor(

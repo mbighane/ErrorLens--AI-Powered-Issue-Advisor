@@ -45,6 +45,7 @@ async def refresh_index():
     errors: dict[str, Optional[str]] = {}
     _env = os.environ.copy()
     _env["PYTHONPATH"] = str(PROJECT_ROOT)
+    _env["PYTHONIOENCODING"] = "utf-8"
 
     for name, script in [("bugs", "scripts/ingest_bugs.py"), ("wiki", "scripts/ingest_wiki.py")]:
         result = await loop.run_in_executor(
