@@ -11,6 +11,9 @@ from pathlib import Path
 
 INDEX_REFRESH_SECONDS = 48 * 3600  # 48 hours
 
+# Project root = two levels up from this file (backend/app/main.py)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 app = FastAPI(
     title="ErrorLens API",
     description="AI-Powered Issue Advisor",
@@ -64,7 +67,8 @@ async def auto_ingest_if_empty():
                 None,
                 lambda s=script: subprocess.run(
                     [sys.executable, s],
-                    capture_output=True, text=True
+                    capture_output=True, text=True,
+                    cwd=str(PROJECT_ROOT),
                 )
             )
             if result.returncode == 0:

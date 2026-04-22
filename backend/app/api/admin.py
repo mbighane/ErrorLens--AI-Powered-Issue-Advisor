@@ -14,6 +14,9 @@ from ..config import settings
 
 router = APIRouter()
 
+# Project root = three levels up from this file (backend/app/api/admin.py)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
 
 class RefreshStatus(BaseModel):
     success: bool
@@ -47,6 +50,7 @@ async def refresh_index():
                 [sys.executable, s],
                 capture_output=True,
                 text=True,
+                cwd=str(PROJECT_ROOT),
             ),
         )
         ingested[name] = result.returncode == 0
