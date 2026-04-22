@@ -199,6 +199,9 @@ class LocalVectorSearchService:
 
         new_items = [it for it in items if id_fn(it) not in existing_ids]
         if not new_items:
+            # No new items, but touch the files so the stale-age clock resets.
+            if existing_emb.size > 0:
+                self._save_index(existing_emb, existing_meta, emb_path, meta_path)
             return 0
 
         texts   = [text_fn(it) for it in new_items]
