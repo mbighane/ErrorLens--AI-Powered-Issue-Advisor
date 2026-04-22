@@ -69,7 +69,7 @@ Visit: http://localhost:8501
 
 1. Go to http://localhost:8501
 2. Describe your issue: "My build is failing with NullReferenceException"
-3. Click "Solve Issue"
+3. Click "Get Issue Advice"
 4. Get comprehensive analysis!
 
 ### Via API (curl)

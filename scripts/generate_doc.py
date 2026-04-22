@@ -85,7 +85,7 @@ doc.add_paragraph()
 # 3. Core Functionality
 heading('3. Core User Functionality')
 para(
-    'The user enters a free-text description of a development issue and clicks "Solve Issue". '
+    'The user enters a free-text description of a development issue and clicks "Get Issue Advice". '
     'The system returns a comprehensive analysis composed of five sections:'
 )
 doc.add_paragraph()
