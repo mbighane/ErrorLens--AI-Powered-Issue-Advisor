@@ -1,6 +1,6 @@
-# ErrorLens - AI-Powered Azure DevOps Issue Solver
+# ErrorLens - AI-Powered Bug Intelligence & Wiki Knowledge Assistant
 
-An intelligent system that connects to Azure DevOps to learn from past bugs and wiki knowledge, preventing and solving development issues faster using a coordinated multi-agent system.
+An intelligent system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent RAG pipeline.
 
 ## Features
 
@@ -13,6 +13,94 @@ An intelligent system that connects to Azure DevOps to learn from past bugs and 
 - 🎯 **DevOps Focus**: Specialized for software development and operations
 - 🔄 **Real-time Responses**: FastAPI backend with async processing
 
+## Agentic RAG Architecture
+
+ErrorLens is built on **Agentic Retrieval-Augmented Generation (Agentic RAG)** — an evolution beyond plain RAG where multiple specialized agents coordinate retrieval, reasoning, and generation rather than a single retrieve-then-generate step.
+
+### What is Agentic RAG?
+
+| | Plain RAG | Agentic RAG (ErrorLens) |
+|---|---|---|
+| **Retrieval** | One vector search | Two specialized retrievers (bugs + wiki) with separate indexes |
+| **Reasoning** | None | `IntegrationContextAgent` analyzes modules, APIs, dependencies |
+| **Generation** | One LLM call | `RecommendationAgent` synthesizes all agent outputs into grounded fixes |
+| **Orchestration** | Linear pipeline | LangGraph `StateGraph` with durable checkpointing via `MemorySaver` |
+| **Resilience** | Single point of failure | Each agent has independent error handling; AI generation falls back to templates |
+
+### The Three RAG Steps in ErrorLens
+
+```
+RETRIEVE  →  BugAnalysisAgent   queries vector index for similar historical bugs
+             WikiKnowledgeAgent  queries vector index for relevant wiki pages
+
+AUGMENT   →  RecommendationAgent builds a GPT prompt containing:
+               - original user query
+               - top retrieved bugs with similarity scores + RCA
+               - identified root causes
+               - integration context (modules, APIs, dependencies)
+
+GENERATE  →  GPT-4o-mini produces specific, grounded fix suggestions
+             based solely on your Azure DevOps history — not generic advice
+```
+
+### Why Agentic over Plain RAG?
+
+A single retrieve-and-generate call cannot simultaneously search two different knowledge bases (bugs vs. wiki), understand module/service dependencies, and synthesize all of that into prioritized fix steps. The agent architecture makes each concern independently testable, replaceable, and extensible.
+
+### LangGraph Orchestration
+
+The `OrchestratorAgent` uses a LangGraph `StateGraph` to enforce a reproducible, durable workflow:
+
+```
+START
+  │
+  ▼
+run_bug_analysis       ← BugAnalysisAgent: vector search over historical bugs
+  │
+  ▼
+run_wiki_knowledge     ← WikiKnowledgeAgent: vector search over wiki pages
+  │
+  ▼
+run_context_analysis   ← IntegrationContextAgent: keyword-based module/API/dep detection
+  │
+  ▼
+run_recommendations    ← RecommendationAgent: GPT-powered synthesis of all above
+  │
+  ▼
+assemble_response      ← Orchestrator: builds IssueSolveResponse
+  │
+  ▼
+END
+```
+
+`MemorySaver` checkpoints state at every node, so a failure in any agent does not lose prior results — the workflow resumes from the last successful checkpoint.
+
+### Vector Search Pipeline
+
+```
+Azure DevOps bugs/wiki
+        │
+  scripts/ingest_bugs.py
+  scripts/ingest_wiki.py
+        │
+        ▼
+  OpenAI text-embedding-3-small
+  (1536-dim embeddings)
+        │
+        ▼
+  data/vector_index/
+    bugs_embeddings.npy   ←─┐
+    bugs_metadata.json       │  LocalVectorSearchService
+    wiki_embeddings.npy   ←─┤  (numpy cosine similarity)
+    wiki_metadata.json       │
+                          ───┘
+                          fallback ↓
+                     RedisVectorSearchService
+                     (Redis Stack + LlamaIndex)
+```
+
+Embeddings are persisted on disk so the index survives restarts without requiring Redis Stack. Redis is used as a fallback when available.
+
 ## Tech Stack
 
 - **Backend**: FastAPI, Python
@@ -20,6 +108,7 @@ An intelligent system that connects to Azure DevOps to learn from past bugs and 
 - **Cache/Vector Store**: Redis
 - **AI**: OpenAI GPT-4o-mini, OpenAI Embeddings
 - **Vector Search**: Redis with LlamaIndex
+- **Orchestration**: LangGraph (StateGraph + MemorySaver)
 
 ## Prerequisites
 
