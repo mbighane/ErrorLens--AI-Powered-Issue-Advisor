@@ -4,6 +4,7 @@ from .config import settings
 from .api.issues import router as issues_router
 from .api.admin import router as admin_router
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -61,6 +62,8 @@ async def auto_ingest_if_empty():
     
     if missing or empty or stale:
         loop = asyncio.get_event_loop()
+        _env = os.environ.copy()
+        _env["PYTHONPATH"] = str(PROJECT_ROOT)
         for script in ["scripts/ingest_bugs.py", "scripts/ingest_wiki.py"]:
             print(f"▶️  Running {script}...")
             result = await loop.run_in_executor(
@@ -69,6 +72,7 @@ async def auto_ingest_if_empty():
                     [sys.executable, s],
                     capture_output=True, text=True,
                     cwd=str(PROJECT_ROOT),
+                    env=_env,
                 )
             )
             if result.returncode == 0:

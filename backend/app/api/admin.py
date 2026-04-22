@@ -1,6 +1,7 @@
 """Admin endpoints — manual data refresh from Azure DevOps."""
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -42,6 +43,8 @@ async def refresh_index():
     loop = asyncio.get_event_loop()
     ingested: dict[str, bool] = {}
     errors: dict[str, Optional[str]] = {}
+    _env = os.environ.copy()
+    _env["PYTHONPATH"] = str(PROJECT_ROOT)
 
     for name, script in [("bugs", "scripts/ingest_bugs.py"), ("wiki", "scripts/ingest_wiki.py")]:
         result = await loop.run_in_executor(
@@ -51,6 +54,7 @@ async def refresh_index():
                 capture_output=True,
                 text=True,
                 cwd=str(PROJECT_ROOT),
+                env=_env,
             ),
         )
         ingested[name] = result.returncode == 0
