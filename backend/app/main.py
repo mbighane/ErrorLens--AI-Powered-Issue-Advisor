@@ -71,7 +71,7 @@ async def auto_ingest_if_empty():
                 None,
                 lambda s=script: subprocess.run(
                     [sys.executable, s],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, encoding="utf-8",
                     cwd=str(PROJECT_ROOT),
                     env=_env,
                 )

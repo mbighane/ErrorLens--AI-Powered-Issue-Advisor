@@ -54,6 +54,7 @@ async def refresh_index():
                 [sys.executable, s],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 cwd=str(PROJECT_ROOT),
                 env=_env,
             ),
