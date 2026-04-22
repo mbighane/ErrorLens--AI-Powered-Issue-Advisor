@@ -159,7 +159,7 @@ def render_result(result: dict, query: str = "") -> None:
 
 
 
-st.title("ErrorLens - AI Issue Solver")
+st.title("ErrorLens - AI-Powered Issue Advisor")
 
 # ── Sidebar: Azure DevOps data refresh ──────────────────────────────────────
 with st.sidebar:

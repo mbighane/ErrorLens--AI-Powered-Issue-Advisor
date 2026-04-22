@@ -1,4 +1,4 @@
-# ErrorLens - AI-Powered Bug Intelligence & Wiki Knowledge Assistant
+# ErrorLens - AI-Powered Issue Advisor
 
 An intelligent system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent RAG pipeline.
 

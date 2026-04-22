@@ -13,7 +13,7 @@ INDEX_REFRESH_SECONDS = 48 * 3600  # 48 hours
 
 app = FastAPI(
     title="ErrorLens API",
-    description="AI-Powered Azure DevOps Issue Solver",
+    description="AI-Powered Issue Advisor",
     version="1.0.0"
 )
 

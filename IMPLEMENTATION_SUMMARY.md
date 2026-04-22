@@ -1,7 +1,7 @@
 """
 IMPLEMENTATION SUMMARY
 Multi-Agent Issue Solver System
-ErrorLens - AI-Powered Azure DevOps Issue Solver
+ErrorLens - AI-Powered Issue Advisor
 """
 
 # Multi-Agent System Implementation Complete ✅
