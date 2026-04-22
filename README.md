@@ -1,6 +1,6 @@
 # ErrorLens - AI-Powered Issue Advisor
 
-An intelligent system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent RAG pipeline.
+An **Agentic RAG** system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent pipeline where specialized agents retrieve, reason, and generate — in parallel.
 
 ## Features
 
