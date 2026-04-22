@@ -45,32 +45,35 @@ GENERATE  →  GPT-4o-mini produces specific, grounded fix suggestions
 
 ### Why Agentic over Plain RAG?
 
-A single retrieve-and-generate call cannot simultaneously search two different knowledge bases (bugs vs. wiki), understand module/service dependencies, and synthesize all of that into prioritized fix steps. The agent architecture makes each concern independently testable, replaceable, and extensible.
+A single retrieve-and-generate call collapses retrieval, reasoning, and generation into one step with no separation of concerns. ErrorLens instead uses a **parallel fan-out / fan-in agent pipeline**: `BugAnalysisAgent`, `WikiKnowledgeAgent`, and `IntegrationContextAgent` all execute simultaneously on the raw user query (fan-out), then `RecommendationAgent` synthesizes their independent outputs into grounded fix suggestions (fan-in). Bug retrieval, wiki retrieval, dependency analysis, and fix generation are distinct, independently testable, and replaceable stages — swapping out the retrieval strategy or upgrading the generation model requires touching only one agent, not the entire pipeline.
 
 ### LangGraph Orchestration
 
 The `OrchestratorAgent` uses a LangGraph `StateGraph` to enforce a reproducible, durable workflow:
 
 ```
-START
-  │
-  ▼
-run_bug_analysis       ← BugAnalysisAgent: vector search over historical bugs
-  │
-  ▼
-run_wiki_knowledge     ← WikiKnowledgeAgent: vector search over wiki pages
-  │
-  ▼
-run_context_analysis   ← IntegrationContextAgent: keyword-based module/API/dep detection
-  │
-  ▼
-run_recommendations    ← RecommendationAgent: GPT-powered synthesis of all above
-  │
-  ▼
-assemble_response      ← Orchestrator: builds IssueSolveResponse
-  │
-  ▼
-END
+                              START
+                                │
+           ┌────────────────────┼────────────────────┐
+           │                    │                    │
+           ▼                    ▼                    ▼
+  run_bug_analysis     run_wiki_knowledge   run_context_analysis
+  BugAnalysisAgent     WikiKnowledgeAgent   IntegrationContextAgent
+  vector search over   vector search over   keyword-based module/
+  historical bugs      wiki pages           API/dep detection
+           │                    │                    │
+           └────────────────────┼────────────────────┘
+                                │  (all three complete before proceeding)
+                                ▼
+                      run_recommendations
+                      RecommendationAgent: GPT-powered synthesis of all above
+                                │
+                                ▼
+                      assemble_response
+                      Orchestrator: builds IssueSolveResponse
+                                │
+                                ▼
+                               END
 ```
 
 `MemorySaver` checkpoints state at every node, so a failure in any agent does not lose prior results — the workflow resumes from the last successful checkpoint.
@@ -291,17 +294,16 @@ graph TB
   U --> ST --> API --> EP --> ORCH
   EP -. request/response validation .- SC
 
-  ORCH --> BA
-  ORCH --> WA
-  ORCH --> CA
-  ORCH --> RA
+  ORCH -->|fan-out: parallel| BA
+  ORCH -->|fan-out: parallel| WA
+  ORCH -->|fan-out: parallel| CA
 
   BA --> BS
   WA --> WS
 
-  BA -- similar_bugs --> ORCH
-  WA -- wiki_pages --> ORCH
-  CA -- context_analysis --> ORCH
+  BA -- similar_bugs --> RA
+  WA -- wiki_pages --> RA
+  CA -- context_analysis --> RA
   RA -- root_causes + suggested_fixes --> ORCH
   ORCH -- assembles IssueSolveResponse --> EP
 
@@ -437,15 +439,25 @@ User Query → Query Analysis → Agent Dispatch → Result Assembly → Final R
 ### **Data Flow Between Agents**
 
 ```
-Bug Analysis Agent     →  Similar bugs, patterns, root causes, fixes
-    ↓
-Wiki Knowledge Agent  →  Learning, best practices, procedures
-    ↓
-Context Agent         →  Module/API/dependency information
-    ↓
-Recommendation Agent  →  Synthesized analysis & actionable recommendations
-    ↓
-Orchestrator          →  Assembles final comprehensive response
+                        ┌──────────────────────────┐
+                        │        user_query         │
+                        └────────────┬─────────────┘
+                                     │  fan-out (simultaneous)
+              ┌──────────────────────┼──────────────────────┐
+              │                      │                      │
+              ▼                      ▼                      ▼
+   BugAnalysisAgent       WikiKnowledgeAgent    IntegrationContextAgent
+   → similar_bugs         → wiki_pages          → context_analysis
+              │                      │                      │
+              └──────────────────────┼──────────────────────┘
+                                     │  fan-in (all outputs merged)
+                                     ▼
+                           RecommendationAgent
+                           → root_causes + suggested_fixes
+                                     │
+                                     ▼
+                              Orchestrator
+                           → IssueSolveResponse
 ```
 
 ## Detailed Setup Instructions

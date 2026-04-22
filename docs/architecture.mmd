@@ -6,9 +6,11 @@ graph TB
     ORCH[OrchestratorAgent<br/>LangGraph StateGraph + MemorySaver]
 
     subgraph AG[Specialized Agents]
-        BA[BugAnalysisAgent]
-        WA[WikiKnowledgeAgent]
-        CA[IntegrationContextAgent]
+        subgraph PAR[Parallel Retrieval — run simultaneously]
+            BA[BugAnalysisAgent]
+            WA[WikiKnowledgeAgent]
+            CA[IntegrationContextAgent]
+        end
         RA[RecommendationAgent]
     end
 
@@ -34,17 +36,16 @@ graph TB
     U --> ST --> API --> EP --> ORCH
     EP -. request/response validation .- SC
 
-    ORCH --> BA
-    ORCH --> WA
-    ORCH --> CA
-    ORCH --> RA
+    ORCH -->|fan-out: parallel| BA
+    ORCH -->|fan-out: parallel| WA
+    ORCH -->|fan-out: parallel| CA
 
     BA --> BS
     WA --> WS
 
-    BA -- similar_bugs --> ORCH
-    WA -- wiki_pages --> ORCH
-    CA -- context_analysis --> ORCH
+    BA -- similar_bugs --> RA
+    WA -- wiki_pages --> RA
+    CA -- context_analysis --> RA
     RA -- root_causes + suggested_fixes --> ORCH
     ORCH -- assembles IssueSolveResponse --> EP
 
