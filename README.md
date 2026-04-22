@@ -12,6 +12,7 @@ An intelligent system that connects to Azure DevOps to mine historical bug patte
 - 💬 **Multi-user Support**: Session-based conversations with unique user IDs
 - 🎯 **DevOps Focus**: Specialized for software development and operations
 - 🔄 **Real-time Responses**: FastAPI backend with async processing
+- ⏱️ **Auto-refresh**: Vector index automatically re-syncs from Azure DevOps every 48 hours on startup
 
 ## Agentic RAG Architecture
 
@@ -103,6 +104,8 @@ Azure DevOps bugs/wiki
 ```
 
 Embeddings are persisted on disk so the index survives restarts without requiring Redis Stack. Redis is used as a fallback when available.
+
+**Auto-refresh on startup**: Every time the FastAPI server starts, `main.py` checks the age of the vector index files. If the index is **missing**, **empty**, or **older than 48 hours**, the ingest scripts are automatically re-run to pull fresh bugs and wiki pages from Azure DevOps and rebuild the embeddings — ensuring the knowledge base stays current without manual intervention.
 
 ## Tech Stack
 
@@ -215,6 +218,31 @@ The web interface will be available at: http://localhost:8501
   ```json
   {
     "query": "string"
+  }
+  ```
+
+### Admin — Manual Data Refresh
+- `POST /api/admin/refresh` - Manually pull fresh data from Azure DevOps and rebuild the vector index (both local numpy and Redis)
+  ```json
+  // Response
+  {
+    "success": true,
+    "bugs_ingested": true,
+    "wiki_ingested": true,
+    "index_age_hours": 0.01,
+    "message": "Vector index refreshed successfully from Azure DevOps."
+  }
+  ```
+
+- `GET /api/admin/index-status` - Check the current age and size of the vector index
+  ```json
+  // Response
+  {
+    "bugs_index": { "exists": true, "age_hours": 12.3, "size_kb": 420.5 },
+    "wiki_index": { "exists": true, "age_hours": 12.3, "size_kb": 210.0 },
+    "oldest_age_hours": 12.3,
+    "stale": false,
+    "refresh_threshold_hours": 48
   }
   ```
 

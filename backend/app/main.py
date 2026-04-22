@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .api.issues import router as issues_router
+from .api.admin import router as admin_router
 import asyncio
 import subprocess
 import sys
@@ -27,6 +28,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(issues_router, prefix="/api/issues", tags=["issues"])
+app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 
 @app.on_event("startup")
 async def auto_ingest_if_empty():

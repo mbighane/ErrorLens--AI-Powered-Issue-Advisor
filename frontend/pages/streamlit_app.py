@@ -59,6 +59,21 @@ def extract_suggested_fix(bug: dict) -> str:
     return clean_text(str(fix)) if fix else ""
 
 
+def get_index_status() -> dict:
+    try:
+        resp = requests.get(f"{API_BASE_URL}/api/admin/index-status", timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return {}
+
+
+def trigger_refresh() -> dict:
+    resp = requests.post(f"{API_BASE_URL}/api/admin/refresh", timeout=300)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_user_id() -> str:
     if "user_id" not in st.session_state:
         st.session_state.user_id = f"streamlit-{uuid.uuid4().hex[:8]}"
@@ -145,6 +160,50 @@ def render_result(result: dict, query: str = "") -> None:
 
 
 st.title("ErrorLens - AI Issue Solver")
+
+# ── Sidebar: Azure DevOps data refresh ──────────────────────────────────────
+with st.sidebar:
+    st.header("🔄 Knowledge Base")
+
+    status = get_index_status()
+    if status:
+        age = status.get("oldest_age_hours")
+        stale = status.get("stale", False)
+        if age is not None:
+            age_label = f"{age:.1f}h ago"
+            if stale:
+                st.warning(f"⚠️ Index is stale — last synced {age_label}")
+            else:
+                st.success(f"✅ Index is fresh — last synced {age_label}")
+        bugs_info = status.get("bugs_index", {})
+        wiki_info = status.get("wiki_index", {})
+        if bugs_info.get("exists"):
+            st.caption(f"Bugs index: {bugs_info.get('size_kb', '?')} KB")
+        if wiki_info.get("exists"):
+            st.caption(f"Wiki index: {wiki_info.get('size_kb', '?')} KB")
+    else:
+        st.info("Could not reach backend.")
+
+    if st.button("🔃 Refresh from Azure DevOps", use_container_width=True):
+        with st.spinner("Fetching latest bugs & wiki from Azure DevOps… this may take a minute."):
+            try:
+                result = trigger_refresh()
+                if result.get("success"):
+                    age = result.get("index_age_hours", 0)
+                    st.success(f"✅ Index refreshed! (age: {age:.2f}h)")
+                    st.caption("Bugs ingested: " + ("✅" if result.get("bugs_ingested") else "❌"))
+                    st.caption("Wiki ingested: " + ("✅" if result.get("wiki_ingested") else "❌"))
+                else:
+                    st.error("Refresh completed with errors:")
+                    if result.get("bugs_error"):
+                        st.code(result["bugs_error"], language="text")
+                    if result.get("wiki_error"):
+                        st.code(result["wiki_error"], language="text")
+            except requests.RequestException as exc:
+                st.error(f"Refresh failed: {exc}")
+
+    st.caption("Auto-refresh runs every 48 hours on server startup.")
+# ────────────────────────────────────────────────────────────────────────────
 
 st.markdown("""
 An intelligent system that connects to Azure DevOps to learn from past bugs and wiki knowledge,
