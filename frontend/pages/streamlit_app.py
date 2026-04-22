@@ -213,7 +213,7 @@ preventing and solving development issues faster.
 # Input for user query
 user_query = st.text_input("Describe your development issue:")
 
-if st.button("Solve Issue"):
+if st.button("🔍 Get Issue Advice"):
     if user_query:
         # Clear any cached result immediately so stale data is never shown
         st.session_state.pop("last_result", None)
