@@ -64,8 +64,8 @@ def get_index_status() -> dict:
         resp = requests.get(f"{API_BASE_URL}/api/admin/index-status", timeout=10)
         resp.raise_for_status()
         return resp.json()
-    except Exception:
-        return {}
+    except Exception as e:
+        return {"_error": str(e)}
 
 
 def trigger_refresh() -> dict:
@@ -166,7 +166,9 @@ with st.sidebar:
     st.header("🔄 Knowledge Base")
 
     status = get_index_status()
-    if status:
+    if "_error" in status:
+        st.warning(f"⚠️ Could not reach backend: {status['_error']}")
+    else:
         age = status.get("oldest_age_hours")
         stale = status.get("stale", False)
         if age is not None:
@@ -181,18 +183,13 @@ with st.sidebar:
             st.caption(f"Bugs index: {bugs_info.get('size_kb', '?')} KB")
         if wiki_info.get("exists"):
             st.caption(f"Wiki index: {wiki_info.get('size_kb', '?')} KB")
-    else:
-        st.info("Could not reach backend.")
 
     if st.button("🔃 Refresh from Azure DevOps", use_container_width=True):
         with st.spinner("Fetching latest bugs & wiki from Azure DevOps… this may take a minute."):
             try:
                 result = trigger_refresh()
                 if result.get("success"):
-                    age = result.get("index_age_hours", 0)
-                    st.success(f"✅ Index refreshed! (age: {age:.2f}h)")
-                    st.caption("Bugs ingested: " + ("✅" if result.get("bugs_ingested") else "❌"))
-                    st.caption("Wiki ingested: " + ("✅" if result.get("wiki_ingested") else "❌"))
+                    st.rerun()
                 else:
                     st.error("Refresh completed with errors:")
                     if result.get("bugs_error"):
