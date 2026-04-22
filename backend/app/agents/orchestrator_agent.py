@@ -45,10 +45,16 @@ class OrchestratorAgent(Agent):
         workflow.add_node("run_recommendations", self._node_recommendations)
         workflow.add_node("assemble_response", self._node_assemble_response)
 
+        # Fan-out: all three retrievers run in parallel from START
         workflow.add_edge(START, "run_bug_analysis")
-        workflow.add_edge("run_bug_analysis", "run_wiki_knowledge")
-        workflow.add_edge("run_wiki_knowledge", "run_context_analysis")
+        workflow.add_edge(START, "run_wiki_knowledge")
+        workflow.add_edge(START, "run_context_analysis")
+
+        # Fan-in: recommendations waits for all three to complete
+        workflow.add_edge("run_bug_analysis", "run_recommendations")
+        workflow.add_edge("run_wiki_knowledge", "run_recommendations")
         workflow.add_edge("run_context_analysis", "run_recommendations")
+
         workflow.add_edge("run_recommendations", "assemble_response")
         workflow.add_edge("assemble_response", END)
 
