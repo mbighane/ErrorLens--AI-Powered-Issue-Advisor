@@ -1,6 +1,8 @@
 # ErrorLens - AI-Powered Issue Advisor
 
-An **Agentic RAG** system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent pipeline where specialized agents retrieve, reason, and generate — in parallel.
+A **Multi-Agent RAG** system that connects to Azure DevOps to mine historical bug patterns from work items and lessons learned from wiki pages, accelerating issue resolution through a coordinated multi-agent pipeline where specialized agents retrieve, extract context, and generate — in parallel.
+
+> **Note:** ErrorLens is best described as *Multi-Agent RAG with orchestration* rather than pure Agentic RAG. Pure Agentic RAG implies agents that autonomously decide what to retrieve next, self-correct based on intermediate results, and dynamically change strategy mid-flight. ErrorLens uses a fixed LangGraph workflow — retrieval always runs the same three agents regardless of query confidence, and there is no iterative re-querying loop. The "agentic" quality comes from parallel orchestration and separation of concerns, not from autonomous agent decision-making.
 
 ## Features
 
@@ -14,25 +16,30 @@ An **Agentic RAG** system that connects to Azure DevOps to mine historical bug p
 - 🔄 **Real-time Responses**: FastAPI backend with async processing
 - ⏱️ **Auto-refresh**: Vector index automatically re-syncs from Azure DevOps every 48 hours on startup
 
-## Agentic RAG Architecture
+## Multi-Agent RAG Architecture
 
-ErrorLens is built on **Agentic Retrieval-Augmented Generation (Agentic RAG)** — an evolution beyond plain RAG where multiple specialized agents coordinate retrieval, reasoning, and generation rather than a single retrieve-then-generate step.
+ErrorLens is built on **Multi-Agent RAG** — an evolution beyond plain RAG where multiple specialized agents coordinate retrieval, context extraction, and generation rather than a single retrieve-then-generate step. Unlike pure Agentic RAG, the workflow graph is fixed and deterministic; agents do not autonomously choose tools or re-query based on intermediate confidence.
 
-### What is Agentic RAG?
+### How does it compare?
 
-| | Plain RAG | Agentic RAG (ErrorLens) |
+| | Plain RAG | Pure Agentic RAG | ErrorLens (Multi-Agent RAG) |
 |---|---|---|
-| **Retrieval** | One vector search | Two specialized retrievers (bugs + wiki) with separate indexes |
-| **Reasoning** | None | `IntegrationContextAgent` analyzes modules, APIs, dependencies |
-| **Generation** | One LLM call | `RecommendationAgent` synthesizes all agent outputs into grounded fixes |
-| **Orchestration** | Linear pipeline | LangGraph `StateGraph` with durable checkpointing via `MemorySaver` |
-| **Resilience** | Single point of failure | Each agent has independent error handling; AI generation falls back to templates |
+| **Retrieval** | One vector search | Dynamic — agents decide what to fetch next | Two specialized retrievers (bugs + wiki), fixed per request |
+| **Context Extraction** | None | LLM-driven | `IntegrationContextAgent` — rule-based module/API/dep detection |
+| **Generation** | One LLM call | Iterative with self-correction | `RecommendationAgent` — one GPT call synthesizing all agent outputs |
+| **Orchestration** | Linear | Autonomous tool-use loops | Fixed LangGraph `StateGraph` with parallel fan-out/fan-in |
+| **Re-querying** | No | Yes — based on result quality | No — retrieval runs once regardless of score quality |
+| **Resilience** | Single point of failure | Varies | Each agent has independent error handling; AI falls back to templates |
 
 ### The Three RAG Steps in ErrorLens
 
 ```
-RETRIEVE  →  BugAnalysisAgent   queries vector index for similar historical bugs
-             WikiKnowledgeAgent  queries vector index for relevant wiki pages
+RETRIEVE  →  BugAnalysisAgent     queries vector index for similar historical bugs
+             WikiKnowledgeAgent    queries vector index for relevant wiki pages
+
+EXTRACT   →  IntegrationContextAgent identifies affected modules, APIs, and
+             external dependencies from the issue description (rule-based,
+             no ML — but its output still enriches the generation prompt)
 
 AUGMENT   →  RecommendationAgent builds a GPT prompt containing:
                - original user query
@@ -44,9 +51,9 @@ GENERATE  →  GPT-4o-mini produces specific, grounded fix suggestions
              based solely on your Azure DevOps history — not generic advice
 ```
 
-### Why Agentic over Plain RAG?
+### Why Multi-Agent over Plain RAG?
 
-A single retrieve-and-generate call collapses retrieval, reasoning, and generation into one step with no separation of concerns. ErrorLens instead uses a **parallel fan-out / fan-in agent pipeline**: `BugAnalysisAgent`, `WikiKnowledgeAgent`, and `IntegrationContextAgent` all execute simultaneously on the raw user query (fan-out), then `RecommendationAgent` synthesizes their independent outputs into grounded fix suggestions (fan-in). Bug retrieval, wiki retrieval, dependency analysis, and fix generation are distinct, independently testable, and replaceable stages — swapping out the retrieval strategy or upgrading the generation model requires touching only one agent, not the entire pipeline.
+A single retrieve-and-generate call collapses retrieval, reasoning, and generation into one step with no separation of concerns. ErrorLens instead uses a **parallel fan-out / fan-in agent pipeline**: `BugAnalysisAgent`, `WikiKnowledgeAgent`, and `IntegrationContextAgent` all execute simultaneously on the raw user query (fan-out), then `RecommendationAgent` synthesizes their independent outputs into grounded fix suggestions (fan-in). Bug retrieval, wiki retrieval, structured context extraction, and fix generation are distinct, independently testable, and replaceable stages — swapping out the retrieval strategy or upgrading the generation model requires touching only one agent, not the entire pipeline.
 
 ### LangGraph Orchestration
 
@@ -60,8 +67,8 @@ The `OrchestratorAgent` uses a LangGraph `StateGraph` to enforce a reproducible,
            ▼                    ▼                    ▼
   run_bug_analysis     run_wiki_knowledge   run_context_analysis
   BugAnalysisAgent     WikiKnowledgeAgent   IntegrationContextAgent
-  vector search over   vector search over   keyword-based module/
-  historical bugs      wiki pages           API/dep detection
+  vector search over   vector search over   rule-based module/
+  historical bugs      wiki pages           API/dep extraction
            │                    │                    │
            └────────────────────┼────────────────────┘
                                 │  (all three complete before proceeding)
