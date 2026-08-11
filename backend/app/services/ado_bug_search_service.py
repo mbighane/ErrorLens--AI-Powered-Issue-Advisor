@@ -1,8 +1,9 @@
-from typing import List
+from typing import List, Union
 from ..schemas.issue_schemas import BugResult
 from .azure_devops_connector import AzureDevOpsConnector
 from .redis_vector_search_service import RedisVectorSearchService
 from .local_vector_search_service import LocalVectorSearchService
+from ..config import settings
 
 class ADOBugSearchService:
     def __init__(self):
@@ -10,7 +11,7 @@ class ADOBugSearchService:
         self.local_vector_service = LocalVectorSearchService()
         self.redis_vector_service = RedisVectorSearchService()
 
-    async def search_similar_bugs(self, query: str, top_k: int = 5) -> List[BugResult]:
+    async def search_similar_bugs(self, query: str, top_k: int = 5) -> Union[List[BugResult], str]:
         """
         Search for similar issues in Azure DevOps.
         Priority:
@@ -66,6 +67,15 @@ class ADOBugSearchService:
                 except Exception:
                     pass
         
+        # If no candidate bugs were found, or the best match is below the
+        # configured similarity threshold, return the explicit sentinel.
+        if not bugs:
+            return "no match"
+        best_score = max((b.get("similarity_score", 0.0) for b in bugs), default=0.0)
+        if best_score < settings.search_similarity_threshold:
+            print(f"[VectorSearch] Best similarity {best_score:.4f} below threshold {settings.search_similarity_threshold:.4f}; returning no match")
+            return "no match"
+
         bug_results = []
         for bug in bugs:
             description = bug.get("description", "")

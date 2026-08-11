@@ -78,6 +78,13 @@ class RecommendationAgent(Agent):
         based on the actual similar bugs found and identified root causes.
         Falls back to None if OpenAI is unavailable.
         """
+        # If there are no similar bugs (explicit sentinel) and no root causes,
+        # return the explicit "no match" sentinel instead of invoking the LLM.
+        if isinstance(similar_bugs, str) and similar_bugs == "no match":
+            if not root_causes:
+                return "no match"
+            # otherwise fall through and let root_causes provide context
+
         if not settings.openai_api_key:
             return None
 
@@ -85,10 +92,15 @@ class RecommendationAgent(Agent):
             from openai import OpenAI
             client = OpenAI(api_key=settings.openai_api_key)
 
-            # Build context from similar bugs
+            # Build context from similar bugs (guard if sentinel string)
             bugs_context_lines = []
-            for bug in similar_bugs[:5]:
-                score = getattr(bug, "similarity_score", 0.0)
+            if isinstance(similar_bugs, str):
+                # sentinel handled above; treat as no bugs found for context
+                similar_bugs_iter = []
+            else:
+                similar_bugs_iter = similar_bugs[:5]
+            for bug in similar_bugs_iter:
+                score = float(bug.get("similarity_score", 0.0)) if isinstance(bug, dict) else getattr(bug, "similarity_score", 0.0)
                 title = getattr(bug, "title", "")
                 desc = getattr(bug, "description", "") or ""
                 # Pull out Root Cause Analysis from description if embedded

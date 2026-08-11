@@ -27,21 +27,30 @@ class BugAnalysisAgent(Agent):
         """
         try:
             # Search for similar bugs
-            similar_bugs = await self.bug_service.search_similar_bugs(query, top_k)
-            
+            similar_bugs_raw = await self.bug_service.search_similar_bugs(query, top_k)
+
+            # Normalize sentinel: services may return the string "no match"
+            no_match = False
+            if isinstance(similar_bugs_raw, str) and similar_bugs_raw == "no match":
+                similar_bugs = []
+                no_match = True
+            else:
+                similar_bugs = similar_bugs_raw or []
+
             # Extract root causes from bug titles and descriptions
             root_causes = self._extract_root_causes_from_bugs(similar_bugs)
-            
+
             # Extract fixes from bug discussions
             fixes = self._extract_fixes_from_bugs(similar_bugs)
-            
+
             return {
                 "agent": self.name,
                 "status": "success",
                 "similar_bugs": similar_bugs,
                 "root_causes": root_causes,
                 "fixes": fixes,
-                "bug_count": len(similar_bugs)
+                "bug_count": len(similar_bugs),
+                "no_match": no_match,
             }
         except Exception as e:
             return {

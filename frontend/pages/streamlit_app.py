@@ -95,6 +95,21 @@ def solve_issue(query: str) -> dict:
 
 def render_result(result: dict, query: str = "") -> None:
     st.subheader("Solution")
+
+    # Friendly handling when the backend indicates no confident matches
+    # Either the backend may return an explicit sentinel, or all result lists may be empty.
+    is_sentinel = isinstance(result, str) and result == "no match"
+    empty_body = (
+        not result.get("similar_bugs") and
+        not result.get("relevant_wiki") and
+        not result.get("root_causes") and
+        not result.get("suggested_fixes")
+    )
+    if is_sentinel or empty_body:
+        st.info("No sufficiently similar historical bugs or wiki guidance were found. I can't provide a confident recommendation.")
+        st.markdown(result.get("analysis", "No analysis returned."))
+        return
+
     st.markdown(result.get("analysis", "No analysis returned."))
 
     # Show only the single highest-scoring bug (already sorted by Pass-2 score)

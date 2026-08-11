@@ -23,13 +23,22 @@ class WikiKnowledgeAgent(Agent):
         """
         try:
             # Search wiki pages
-            wiki_pages = await self.wiki_service.search_wiki_pages(query, top_k)
-            
+            wiki_pages_raw = await self.wiki_service.search_wiki_pages(query, top_k)
+
+            # Normalize sentinel: services may return the string "no match"
+            no_match = False
+            if isinstance(wiki_pages_raw, str) and wiki_pages_raw == "no match":
+                wiki_pages = []
+                no_match = True
+            else:
+                wiki_pages = wiki_pages_raw or []
+
             return {
                 "agent": self.name,
                 "status": "success",
                 "wiki_pages": wiki_pages,
-                "page_count": len(wiki_pages)
+                "page_count": len(wiki_pages),
+                "no_match": no_match,
             }
         except Exception as e:
             return {

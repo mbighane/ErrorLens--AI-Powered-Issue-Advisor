@@ -1,8 +1,9 @@
-from typing import List
+from typing import List, Union
 from ..schemas.issue_schemas import WikiResult
 from .azure_devops_connector import AzureDevOpsConnector
 from .redis_vector_search_service import RedisVectorSearchService
 from .local_vector_search_service import LocalVectorSearchService
+from ..config import settings
 
 class ADOWikiSearchService:
     def __init__(self):
@@ -10,7 +11,7 @@ class ADOWikiSearchService:
         self.local_vector_service = LocalVectorSearchService()
         self.redis_vector_service = RedisVectorSearchService()
 
-    async def search_wiki_pages(self, query: str, top_k: int = 10) -> List[WikiResult]:
+    async def search_wiki_pages(self, query: str, top_k: int = 10) -> Union[List[WikiResult], str]:
         """
         Search for relevant wiki pages in Azure DevOps.
         Priority:
@@ -57,6 +58,14 @@ class ADOWikiSearchService:
                 except Exception:
                     pass
         
+        # If no candidate wiki pages or top similarity below threshold, return sentinel
+        if not wiki_pages:
+            return "no match"
+        best_score = max((p.get("similarity_score", 0.0) for p in wiki_pages), default=0.0)
+        if best_score < settings.search_similarity_threshold:
+            print(f"[VectorSearch] Best wiki similarity {best_score:.4f} below threshold {settings.search_similarity_threshold:.4f}; returning no match")
+            return "no match"
+
         wiki_results = []
         for page in wiki_pages:
             # Sanitise content: re-encode as UTF-8 replacing any unmappable chars
