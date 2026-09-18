@@ -112,15 +112,16 @@ def render_result(result: dict, query: str = "") -> None:
 
     st.markdown(result.get("analysis", "No analysis returned."))
 
-    # Show only the single highest-scoring bug (already sorted by Pass-2 score)
+    # Show the strongest candidate bugs. This keeps the user in control when the
+    # semantic match is close but the title wording is not exact.
     all_similar = result.get("similar_bugs", [])
-    similar_bugs = all_similar[:1] if all_similar else []
+    similar_bugs = all_similar[:3] if all_similar else []
     if similar_bugs:
         st.subheader("Similar Issues")
-        for bug in similar_bugs:
+        for idx, bug in enumerate(similar_bugs, 1):
             title = bug.get("title", "Untitled")
             score = bug.get("similarity_score", 0.0)
-            st.markdown(f"- **{title}** ({score:.2f})")
+            st.markdown(f"{idx}. **{title}** ({score:.2f})")
 
             bug_description = clean_text(str(bug.get("description", "")))
             root_cause_analysis = extract_root_cause_analysis(bug)

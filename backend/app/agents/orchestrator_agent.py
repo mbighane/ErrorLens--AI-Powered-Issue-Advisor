@@ -137,9 +137,9 @@ class OrchestratorAgent(Agent):
             recommendations
         )
         
-        # Keep only the single highest-scoring bug (Pass-2 score, already sorted descending)
+        # Keep the strongest bug candidates, not just one weakly matched item.
         all_similar_bugs = bug_analysis.get("similar_bugs", [])
-        filtered_similar_bugs = all_similar_bugs[:1] if all_similar_bugs else []
+        filtered_similar_bugs = all_similar_bugs[:3] if all_similar_bugs else []
 
         return IssueSolveResponse(
             analysis=analysis,

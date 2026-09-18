@@ -36,6 +36,23 @@ async def test_ado_bug_search_returns_no_match_for_low_similarity():
 
 
 @pytest.mark.asyncio
+async def test_title_exact_match_is_not_rejected():
+    svc = ADOBugSearchService()
+    svc.local_vector_service.enabled = False
+
+    def fake_redis_search(query, top_k=5):
+        return [
+            {"id": "42", "title": "Exact Title Match", "description": "desc", "similarity_score": 0.12}
+        ]
+
+    svc.redis_vector_service.search_bugs = fake_redis_search
+
+    result = await svc.search_similar_bugs("Exact Title Match", top_k=5)
+    assert isinstance(result, list)
+    assert result[0].title == "Exact Title Match"
+
+
+@pytest.mark.asyncio
 async def test_ado_wiki_search_returns_no_match_for_low_similarity():
     svc = ADOWikiSearchService()
     svc.local_vector_service.enabled = False

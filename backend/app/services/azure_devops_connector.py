@@ -225,9 +225,15 @@ class AzureDevOpsConnector:
 
         score = 0.6 * theme_score + 0.4 * title_token_score
 
-        # Small bonus when the full query phrase appears verbatim in the title
-        if self._clean_text(query) in self._clean_text(title_text):
-            score += 0.15
+        clean_query = self._clean_text(query)
+        clean_title = self._clean_text(title_text)
+
+        # Strong bonus for exact or near-exact title matches so title-based searches
+        # are not discarded as weak semantic matches.
+        if clean_query == clean_title:
+            score += 0.35
+        elif clean_query in clean_title or clean_title in clean_query:
+            score += 0.20
 
         return min(score, 1.0)
 

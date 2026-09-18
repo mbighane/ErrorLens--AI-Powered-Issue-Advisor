@@ -1,103 +1,72 @@
 from typing import List, Union
 from ..schemas.issue_schemas import BugResult
-from .azure_devops_connector import AzureDevOpsConnector
-from .redis_vector_search_service import RedisVectorSearchService
-from .local_vector_search_service import LocalVectorSearchService
-from ..config import settings
+from .hybrid_bug_search_service import HybridBugSearchService
+
 
 class ADOBugSearchService:
+    """
+    Main bug search service for Azure DevOps using Hybrid Search.
+    
+    Delegates to HybridBugSearchService which combines:
+    - Semantic search (vector embeddings)
+    - Exact match search (keyword/theme detection)
+    """
+    
     def __init__(self):
-        self.connector = AzureDevOpsConnector()
-        self.local_vector_service = LocalVectorSearchService()
-        self.redis_vector_service = RedisVectorSearchService()
+        self.hybrid_service = HybridBugSearchService()
 
     async def search_similar_bugs(self, query: str, top_k: int = 5) -> Union[List[BugResult], str]:
         """
-        Search for similar issues in Azure DevOps.
-        Priority:
-          1. Local vector index (OpenAI embeddings + numpy cosine similarity)
-          2. Redis vector store (requires Redis Stack)
-          3. ADO WIQL keyword search + theme-based scoring (always available)
-        Bugs fetched from ADO are automatically indexed locally for future queries.
+        Search for similar issues in Azure DevOps using HYBRID search.
+        
+        Hybrid Search Strategy:
+          1. Semantic Search (parallel): OpenAI embeddings + cosine similarity
+          2. Exact Match Search (parallel): Keyword/theme matching via WIQL
+          3. Merge & Rank: Combined scoring with RRF + weighted fusion
+          
+        Benefits:
+          - Captures both semantic understanding and lexical precision
+          - More robust to embedding quality issues
+          - Finds conceptually similar bugs AND exact keyword matches
+          - Adaptive: weights can be tuned per deployment
+          
+        Fallback:
+          - If both searches fail, returns "no match" sentinel
         """
-        bugs = []
-
-        # 1. Local vector search — preferred when index has been seeded.
-        if self.local_vector_service.enabled and self.local_vector_service.has_bugs_indexed():
+        try:
+            # Use hybrid search combining semantic + exact match
+            bugs = await self.hybrid_service.search_bugs_hybrid(query, top_k)
+            
+            if isinstance(bugs, str) and bugs == "no match":
+                return "no match"
+            
+            if not bugs:
+                return "no match"
+            
+            print(f"[ADOBugSearchService] Hybrid search returned {len(bugs)} result(s)")
+            return self._build_final_results(bugs)
+            
+        except Exception as exc:
+            print(f"[ADOBugSearchService] Hybrid search failed: {exc}")
+            print("[ADOBugSearchService] Falling back to semantic-only search...")
+            
+            # Fallback to semantic search only
             try:
-                bugs = self.local_vector_service.search_bugs(query, top_k)
-                if bugs:
-                    print(f"[VectorSearch] Local index returned {len(bugs)} bug(s) for query.")
-                    # Two-pass rescore: use initial results' content to enrich query, then rescore.
-                    bugs = self.local_vector_service.rescore_bugs_from_search_results(query, bugs)
-                    print(f"[VectorSearch] Two-pass re-score applied to {len(bugs)} local bug(s).")
-            except Exception as exc:
-                print(f"[VectorSearch] Local bug search failed: {exc}")
-                bugs = []
-
-        # 2. Redis vector search fallback.
+                bugs = await self.hybrid_service._semantic_search(query, top_k)
+                if isinstance(bugs, str) and bugs == "no match":
+                    return "no match"
+                if not bugs:
+                    return "no match"
+                return self._build_final_results(bugs)
+            except Exception as exc2:
+                print(f"[ADOBugSearchService] Fallback search also failed: {exc2}")
+                return "no match"
+    
+    def _build_final_results(self, bugs: Union[List[BugResult], List]) -> List[BugResult]:
+        """Ensure results are BugResult objects."""
         if not bugs:
-            try:
-                bugs = self.redis_vector_service.search_bugs(query, top_k)
-            except Exception:
-                bugs = []
+            return []
+        if isinstance(bugs[0], BugResult):
+            return bugs
+        return bugs  # Already processed by hybrid service
 
-        # 3. ADO WIQL + theme-based scoring fallback.
-        if not bugs:
-            bugs = await self.connector.search_bugs(query, top_k)
-            # Re-score ADO results using two-pass semantic rescoring:
-            # Pass 1 finds the closest bugs, their content enriches the query,
-            # Pass 2 re-scores all bugs with the enriched query.
-            if bugs and self.local_vector_service.enabled:
-                try:
-                    bugs = self.local_vector_service.rescore_bugs_from_search_results(query, bugs)
-                    print(f"[VectorSearch] Two-pass re-scored {len(bugs)} ADO bug(s).")
-                except Exception as exc:
-                    print(f"[VectorSearch] Two-pass re-scoring failed: {exc}")
-            # Lazily index fetched bugs so subsequent queries hit vector search.
-            if bugs:
-                try:
-                    newly_indexed = self.local_vector_service.index_bugs(bugs)
-                    if newly_indexed:
-                        print(f"[VectorSearch] Indexed {newly_indexed} new bug(s) into local vector store.")
-                except Exception as exc:
-                    print(f"[VectorSearch] Local bug indexing failed: {exc}")
-                try:
-                    self.redis_vector_service.index_bugs(bugs)
-                except Exception:
-                    pass
-        
-        # If no candidate bugs were found, or the best match is below the
-        # configured similarity threshold, return the explicit sentinel.
-        if not bugs:
-            return "no match"
-        best_score = max((b.get("similarity_score", 0.0) for b in bugs), default=0.0)
-        if best_score < settings.search_similarity_threshold:
-            print(f"[VectorSearch] Best similarity {best_score:.4f} below threshold {settings.search_similarity_threshold:.4f}; returning no match")
-            return "no match"
-
-        bug_results = []
-        for bug in bugs:
-            description = bug.get("description", "")
-            root_cause_analysis = bug.get("root_cause_analysis", "")
-            suggested_fix = bug.get("suggested_fix", "")
-            combined_description = description
-            if root_cause_analysis:
-                combined_description = f"{description}\n\nRoot Cause Analysis:\n{root_cause_analysis}" if description else f"Root Cause Analysis:\n{root_cause_analysis}"
-
-            bug_results.append(BugResult(
-                id=bug["id"],
-                title=bug["title"],
-                description=combined_description,
-                state=bug.get("state"),
-                assigned_to=bug.get("assigned_to"),
-                url=bug.get("url"),
-                similarity_score=bug.get("similarity_score", 0.0),
-                metadata={
-                    "root_cause_analysis": root_cause_analysis,
-                    "suggested_fix": suggested_fix,
-                    "work_item_type": "Issue",
-                },
-            ))
-        
-        return bug_results
