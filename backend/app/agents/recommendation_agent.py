@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from .base_agent import Agent
 from ..schemas.issue_schemas import RootCause, SuggestedFix
 from ..config import settings
+from ..services.azure_ai_monitoring import AzureAIMonitoring
 
 
 class RecommendationAgent(Agent):
@@ -85,12 +86,25 @@ class RecommendationAgent(Agent):
                 return "no match"
             # otherwise fall through and let root_causes provide context
 
-        if not settings.openai_api_key:
+        if not (settings.use_azure_openai or settings.openai_api_key):
             return None
 
+        monitoring = AzureAIMonitoring()
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=settings.openai_api_key)
+            if settings.use_azure_openai:
+                from openai import AzureOpenAI
+                client = AzureOpenAI(
+                    api_key=settings.azure_openai_api_key,
+                    api_version=settings.azure_openai_api_version,
+                    azure_endpoint=settings.azure_openai_endpoint,
+                )
+                model_name = settings.azure_openai_chat_deployment
+            else:
+                if not settings.openai_api_key:
+                    return None
+                from openai import OpenAI
+                client = OpenAI(api_key=settings.openai_api_key)
+                model_name = settings.openai_chat_model
 
             # Build context from similar bugs (guard if sentinel string)
             bugs_context_lines = []
@@ -138,8 +152,18 @@ class RecommendationAgent(Agent):
                 "]"
             )
 
+            monitoring.trace_event(
+                "recommendation_ai_fix_generation",
+                {
+                    "status": "started",
+                    "model": model_name,
+                    "original_query": original_query,
+                    "similar_bug_count": len(similar_bugs_iter) if isinstance(similar_bugs, list) else 0,
+                },
+            )
+
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model_name,
                 messages=[
                     {
                         "role": "system",
@@ -174,10 +198,29 @@ class RecommendationAgent(Agent):
                     steps=item.get("steps", []),
                     priority=priority,
                 ))
+
+            monitoring.trace_event(
+                "recommendation_ai_fix_generation",
+                {
+                    "status": "success",
+                    "model": model_name,
+                    "fix_count": len(fixes),
+                    "original_query": original_query,
+                },
+            )
             print(f"[RecommendationAgent] AI generated {len(fixes)} fix suggestion(s).")
             return fixes if fixes else None
 
         except Exception as exc:
+            monitoring.trace_event(
+                "recommendation_ai_fix_generation",
+                {
+                    "status": "error",
+                    "model": settings.azure_openai_chat_deployment if settings.use_azure_openai else settings.openai_chat_model,
+                    "original_query": original_query,
+                    "error": str(exc),
+                },
+            )
             print(f"[RecommendationAgent] AI fix generation failed: {exc}")
             return None
 

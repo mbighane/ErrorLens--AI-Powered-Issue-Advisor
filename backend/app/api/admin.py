@@ -36,7 +36,6 @@ async def refresh_index():
 
     - Fetches latest bugs and wiki pages from Azure DevOps
     - Rebuilds the local numpy vector index (data/vector_index/)
-    - Also updates the Redis vector index if Redis Stack is available
     - Use this whenever new bugs have been filed or wiki pages updated and you
       do not want to wait for the automatic 48-hour refresh cycle.
     """

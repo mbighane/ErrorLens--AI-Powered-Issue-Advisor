@@ -15,7 +15,7 @@ import re
 from typing import List, Dict, Any, Union, Tuple
 from ..schemas.issue_schemas import BugResult
 from .local_vector_search_service import LocalVectorSearchService
-from .redis_vector_search_service import RedisVectorSearchService
+from .azure_ai_search_service import AzureAISearchService
 from .azure_devops_connector import AzureDevOpsConnector
 from ..config import settings
 
@@ -37,9 +37,9 @@ class HybridBugSearchService:
 
     def __init__(self):
         self.local_vector_service = LocalVectorSearchService()
-        self.redis_vector_service = RedisVectorSearchService()
+        self.azure_ai_search_service = AzureAISearchService()
         self.connector = AzureDevOpsConnector()
-        
+
         # Tuning parameters
         self.SEMANTIC_WEIGHT = 0.6
         self.EXACT_MATCH_WEIGHT = 0.4
@@ -96,34 +96,32 @@ class HybridBugSearchService:
 
     async def _semantic_search(self, query: str, top_k: int = 10) -> Union[List[Dict[str, Any]], str]:
         """
-        Semantic search using vector embeddings (local or Redis fallback).
+        Semantic search using Azure AI Search when configured, otherwise local vector fallback.
         
         Returns:
             List of bugs with 'similarity_score' field, or "no match" sentinel
         """
         bugs = []
 
-        # Try local vector search first
+        if settings.azure_search_enabled and self.azure_ai_search_service.enabled:
+            try:
+                bugs = self.azure_ai_search_service.search(query, top_k)
+                if bugs:
+                    print(f"[HybridSearch] Semantic: Azure AI Search returned {len(bugs)} bug(s)")
+                    return bugs
+            except Exception as exc:
+                print(f"[HybridSearch] Semantic: Azure AI Search failed: {exc}")
+                bugs = []
+
         if self.local_vector_service.enabled and self.local_vector_service.has_bugs_indexed():
             try:
                 bugs = self.local_vector_service.search_bugs(query, top_k)
                 if bugs:
                     print(f"[HybridSearch] Semantic: Local index returned {len(bugs)} bug(s)")
-                    # Apply two-pass rescoring
                     bugs = self.local_vector_service.rescore_bugs_from_search_results(query, bugs)
                     print(f"[HybridSearch] Semantic: Two-pass re-score applied to {len(bugs)} bug(s)")
             except Exception as exc:
                 print(f"[HybridSearch] Semantic: Local search failed: {exc}")
-                bugs = []
-
-        # Redis fallback
-        if not bugs:
-            try:
-                bugs = self.redis_vector_service.search_bugs(query, top_k)
-                if bugs:
-                    print(f"[HybridSearch] Semantic: Redis returned {len(bugs)} bug(s)")
-            except Exception as exc:
-                print(f"[HybridSearch] Semantic: Redis search failed: {exc}")
                 bugs = []
 
         return bugs if bugs else "no match"
@@ -346,12 +344,6 @@ class HybridBugSearchService:
                 print(f"[HybridSearch] Indexed {newly_indexed} new bug(s) locally")
         except Exception as exc:
             print(f"[HybridSearch] Local indexing failed: {exc}")
-
-        try:
-            self.redis_vector_service.index_bugs(bugs)
-            print(f"[HybridSearch] Indexed {len(bugs)} bug(s) to Redis")
-        except Exception:
-            pass
 
     def _build_bug_results(self, bugs: List[Dict[str, Any]]) -> List[BugResult]:
         """Convert merged bug dicts to BugResult objects."""

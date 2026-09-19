@@ -1,29 +1,40 @@
 from typing import List, Union
 from ..schemas.issue_schemas import WikiResult
 from .azure_devops_connector import AzureDevOpsConnector
-from .redis_vector_search_service import RedisVectorSearchService
 from .local_vector_search_service import LocalVectorSearchService
+from .azure_ai_search_service import AzureAISearchService
 from ..config import settings
 
 class ADOWikiSearchService:
     def __init__(self):
         self.connector = AzureDevOpsConnector()
         self.local_vector_service = LocalVectorSearchService()
-        self.redis_vector_service = RedisVectorSearchService()
+        self.azure_ai_search_service = AzureAISearchService()
 
     async def search_wiki_pages(self, query: str, top_k: int = 10) -> Union[List[WikiResult], str]:
         """
         Search for relevant wiki pages in Azure DevOps.
         Priority:
-          1. Local vector index (OpenAI embeddings + numpy cosine similarity)
-          2. Redis vector store (requires Redis Stack)
+          1. Azure AI Search (managed semantic retrieval when configured)
+          2. Local vector index (OpenAI embeddings + numpy cosine similarity)
           3. ADO git-based wiki search (always available)
         Wiki pages fetched from ADO are automatically indexed locally for future queries.
         """
         wiki_pages = []
 
-        # 1. Local vector search — preferred when index has been seeded.
-        if self.local_vector_service.enabled and self.local_vector_service.has_wiki_indexed():
+        # 1. Azure AI Search — preferred when configured.
+        if settings.azure_search_enabled and self.azure_ai_search_service.enabled:
+            try:
+                wiki_pages = self.azure_ai_search_service.search(query, top_k)
+                if wiki_pages:
+                    wiki_pages = [max(wiki_pages, key=lambda p: p.get("similarity_score", 0))]
+                    print(f"[VectorSearch] Azure AI Search returned top-1 wiki result (score={wiki_pages[0].get('similarity_score', 0):.4f}) for query.")
+            except Exception as exc:
+                print(f"[VectorSearch] Azure AI Search wiki search failed: {exc}")
+                wiki_pages = []
+
+        # 2. Local vector search — preferred when index has been seeded.
+        if not wiki_pages and self.local_vector_service.enabled and self.local_vector_service.has_wiki_indexed():
             try:
                 wiki_pages = self.local_vector_service.search_wiki_pages(query, top_k)
                 # Keep only the highest-scoring result to avoid surfacing loosely
@@ -33,13 +44,6 @@ class ADOWikiSearchService:
                     print(f"[VectorSearch] Local index returned top-1 wiki section (score={wiki_pages[0].get('similarity_score', 0):.4f}) for query.")
             except Exception as exc:
                 print(f"[VectorSearch] Local wiki search failed: {exc}")
-                wiki_pages = []
-
-        # 2. Redis vector search fallback.
-        if not wiki_pages:
-            try:
-                wiki_pages = self.redis_vector_service.search_wiki_pages(query, top_k)
-            except Exception:
                 wiki_pages = []
 
         # 3. ADO git-based wiki search fallback.
@@ -53,10 +57,6 @@ class ADOWikiSearchService:
                         print(f"[VectorSearch] Indexed {newly_indexed} new wiki page(s) into local vector store.")
                 except Exception as exc:
                     print(f"[VectorSearch] Local wiki indexing failed: {exc}")
-                try:
-                    self.redis_vector_service.index_wiki_pages(wiki_pages)
-                except Exception:
-                    pass
         
         # If no candidate wiki pages or top similarity below threshold, return sentinel
         if not wiki_pages:

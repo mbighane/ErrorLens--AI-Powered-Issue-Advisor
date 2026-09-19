@@ -120,7 +120,6 @@ class IntegrationContextAgent(Agent):
         # Dependency keywords
         dep_keywords = {
             "database": "Database (PostgreSQL/MySQL)",
-            "redis": "Redis Cache",
             "elasticsearch": "Elasticsearch",
             "kafka": "Kafka Message Queue",
             "openai": "OpenAI API",

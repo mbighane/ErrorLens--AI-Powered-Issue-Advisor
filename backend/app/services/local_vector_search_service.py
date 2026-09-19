@@ -3,7 +3,7 @@ Local vector search service using OpenAI embeddings + numpy cosine similarity.
 
 Embeddings and metadata are persisted as .npy / .json file pairs under
 settings.vector_index_dir so the index survives application restarts without
-requiring Redis Stack or any external vector database.
+requiring any external vector database.
 
 Index layout
 ------------
@@ -22,14 +22,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-from openai import OpenAI
+from openai import AzureOpenAI, OpenAI
 
 from ..config import settings
+from .azure_ai_monitoring import AzureAIMonitoring
 
-_EMBEDDING_MODEL = "text-embedding-3-small"
+_EMBEDDING_MODEL = settings.azure_openai_embedding_deployment if settings.use_azure_openai else "text-embedding-3-small"
 _EMBEDDING_DIMS  = 1536
 _MAX_TEXT_CHARS  = 4000   # well under the model's token limit
 
@@ -49,9 +50,9 @@ def _truncate(text: str) -> str:
 
 class LocalVectorSearchService:
     """
-    Drop-in replacement / complement for RedisVectorSearchService.
+    Local vector store implementation used as the primary fallback for search.
 
-    Provides the same public API:
+    Provides the public API:
         index_bugs(bugs)          -> int   (number newly indexed)
         search_bugs(query, top_k) -> List[Dict]
         index_wiki_pages(pages)   -> int
@@ -75,9 +76,16 @@ class LocalVectorSearchService:
         self._wiki_meta_path = index_dir / "wiki_metadata.json"
 
         try:
-            if not settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not set — local vector search disabled")
-            self._client = OpenAI(api_key=settings.openai_api_key)
+            if settings.use_azure_openai:
+                self._client = AzureOpenAI(
+                    api_key=settings.azure_openai_api_key,
+                    api_version=settings.azure_openai_api_version,
+                    azure_endpoint=settings.azure_openai_endpoint,
+                )
+            elif settings.openai_api_key:
+                self._client = OpenAI(api_key=settings.openai_api_key)
+            else:
+                raise ValueError("No OpenAI or Azure OpenAI credentials configured — local vector search disabled")
             index_dir.mkdir(parents=True, exist_ok=True)
             self.enabled = True
         except Exception as exc:
@@ -98,11 +106,12 @@ class LocalVectorSearchService:
     # ------------------------------------------------------------------
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed a batch of texts with a single OpenAI API call."""
+        """Embed a batch of texts with a single OpenAI/Azure OpenAI API call."""
         cleaned = [_truncate(t) or " " for t in texts]
+        embedding_model = settings.azure_openai_embedding_deployment if settings.use_azure_openai else _EMBEDDING_MODEL
         response = self._client.embeddings.create(
             input=cleaned,
-            model=_EMBEDDING_MODEL,
+            model=embedding_model,
         )
         return [item.embedding for item in response.data]
 
@@ -117,9 +126,11 @@ class LocalVectorSearchService:
         so the embedding sits closer to root-cause level bug descriptions.
         Falls back to the original query if GPT is unavailable.
         """
+        monitoring = AzureAIMonitoring()
         try:
+            model_name = settings.azure_openai_chat_deployment if settings.use_azure_openai else settings.openai_chat_model
             response = self._client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model_name,
                 messages=[
                     {
                         "role": "system",
@@ -136,9 +147,27 @@ class LocalVectorSearchService:
                 max_tokens=80,
             )
             expanded = response.choices[0].message.content.strip()
+            monitoring.trace_event(
+                "vector_query_expansion",
+                {
+                    "status": "success",
+                    "model": model_name,
+                    "query": query,
+                    "expanded_query": expanded,
+                },
+            )
             print(f"[VectorSearch] Query expanded: '{query}' -> '{expanded}'")
             return expanded
         except Exception as exc:
+            monitoring.trace_event(
+                "vector_query_expansion",
+                {
+                    "status": "error",
+                    "model": settings.azure_openai_chat_deployment if settings.use_azure_openai else settings.openai_chat_model,
+                    "query": query,
+                    "error": str(exc),
+                },
+            )
             print(f"[VectorSearch] Query expansion failed, using original: {exc}")
             return query
 
@@ -219,9 +248,10 @@ class LocalVectorSearchService:
         instead of the bug-report-focused prompt used for bug searches.
         Falls back to the original query if GPT is unavailable.
         """
+        monitoring = AzureAIMonitoring()
         try:
             response = self._client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=settings.openai_chat_model,
                 messages=[
                     {
                         "role": "system",
@@ -241,9 +271,27 @@ class LocalVectorSearchService:
                 max_tokens=80,
             )
             expanded = response.choices[0].message.content.strip()
+            monitoring.trace_event(
+                "wiki_query_expansion",
+                {
+                    "status": "success",
+                    "model": settings.openai_chat_model,
+                    "query": query,
+                    "expanded_query": expanded,
+                },
+            )
             print(f"[VectorSearch] Wiki query expanded: '{query}' -> '{expanded}'")
             return expanded
         except Exception as exc:
+            monitoring.trace_event(
+                "wiki_query_expansion",
+                {
+                    "status": "error",
+                    "model": settings.openai_chat_model,
+                    "query": query,
+                    "error": str(exc),
+                },
+            )
             print(f"[VectorSearch] Wiki query expansion failed, using original: {exc}")
             return query
 
@@ -320,7 +368,7 @@ class LocalVectorSearchService:
         return results
 
     # ------------------------------------------------------------------
-    # Bug index API  (mirrors RedisVectorSearchService)
+    # Bug index API
     # ------------------------------------------------------------------
 
     def index_bugs(self, bugs: List[Dict[str, Any]]) -> int:
@@ -504,7 +552,7 @@ class LocalVectorSearchService:
             return self.score_bugs_in_memory(query, bugs)
 
     # ------------------------------------------------------------------
-    # Wiki index API  (mirrors RedisVectorSearchService)
+    # Wiki index API
     # ------------------------------------------------------------------
 
     @staticmethod

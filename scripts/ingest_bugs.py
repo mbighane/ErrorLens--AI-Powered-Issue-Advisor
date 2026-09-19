@@ -5,19 +5,16 @@ Script to ingest historical bugs from Azure DevOps
 import asyncio
 from backend.app.services.azure_devops_connector import AzureDevOpsConnector
 from backend.app.services.local_vector_search_service import LocalVectorSearchService
-from backend.app.services.redis_vector_search_service import RedisVectorSearchService
 
 async def ingest_bugs():
     """
     Fetch bugs from Azure DevOps and embed them into the local vector index.
-    Also indexes into Redis if Redis Stack is available.
     """
     print("🔍 Starting bug ingestion from Azure DevOps...")
     
     try:
         connector = AzureDevOpsConnector()
         local_service = LocalVectorSearchService()
-        redis_service = RedisVectorSearchService()
 
         if local_service.enabled:
             print("✅ Local vector search enabled — embeddings will be persisted locally.")
@@ -54,13 +51,6 @@ async def ingest_bugs():
         indexed_count = vector_service.index_bugs(all_bugs)
         print(f"📦 Indexed {indexed_count} new bug(s) in local vector store")
 
-        # Also index into Redis if available.
-        try:
-            redis_count = redis_service.index_bugs(all_bugs)
-            if redis_count:
-                print(f"📦 Also indexed {redis_count} bug(s) into Redis vector store")
-        except Exception:
-            pass
         if all_bugs:
             print(f"\n📌 Sample bug:")
             bug = all_bugs[0]
