@@ -101,16 +101,16 @@ The ErrorLens system uses a **coordinated multi-agent architecture** where five 
 **Context Analysis**:
 - Module identification (Auth, Database, Cache, etc.)
 - API mapping (REST, GraphQL, WebSocket, etc.)
-- Dependency recognition (Redis, PostgreSQL, etc.)
-- Service identification (Azure, AWS, etc.)
+- Dependency recognition (Azure DevOps, Azure AI Search, local vector index, Azure OpenAI, etc.)
+- Service identification (Azure Monitor, Azure Search, OpenAI, local indexing, etc.)
 
 **Output**:
 ```python
 {
     "modules": ["Auth Module", "Database Module", ...],
     "affected_apis": ["REST API", "GraphQL", ...],
-    "dependencies": ["PostgreSQL", "Redis", ...],
-    "services": ["Azure DevOps", "Jenkins", ...],
+    "dependencies": ["Azure DevOps", "Azure AI Search", "local vector store", "Azure OpenAI"],
+    "services": ["Azure DevOps", "Azure Monitor", "OpenAI / Azure OpenAI", "Search"],
     "context": "Integration context summary"
 }
 ```
@@ -230,12 +230,30 @@ AZURE_DEVOPS_ORG=your_organization
 AZURE_DEVOPS_PROJECT=your_project
 AZURE_DEVOPS_TOKEN=your_personal_access_token
 
-# OpenAI
-OPENAI_API_KEY=your_api_key
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=your_azure_openai_key
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-02-01
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
+# Standard OpenAI fallback
+OPENAI_API_KEY=your_openai_key
+
+# Azure AI Search
+AZURE_SEARCH_API_KEY=your_search_key
+AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+AZURE_SEARCH_INDEX_NAME=bug-search-index
+AZURE_SEARCH_SEMANTIC_CONFIGURATION=default
+AZURE_SEARCH_USE_SEMANTIC_SEARCH=true
+
+# Azure Monitor / Application Insights
+APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=...
+AZURE_MONITOR_TRACING_ENABLED=true
+
+# Local vector refresh settings
+VECTOR_INDEX_DIR=data/vector_index
+INDEX_REFRESH_HOURS=48
 ```
 
 ### Azure DevOps PAT Permissions
@@ -309,16 +327,17 @@ curl -X POST http://localhost:8000/api/issues/solve \
 
 ### Optimization Strategies
 
-1. **Parallel Execution**: Bug, Wiki, and Context agents run in parallel
-2. **Caching**: Azure DevOps query results cached in Redis
-3. **Rate Limiting**: Azure DevOps API rate limiting handled
-4. **Async Processing**: All operations are async/await
+1. **Parallel Execution**: bug, wiki, and context retrieval run in parallel
+2. **Hybrid Retrieval**: semantic search via Azure AI Search plus local vector fallback and exact-match scoring
+3. **Rate Limiting**: Azure DevOps API rate limiting handled in connectors and queries
+4. **Async Processing**: all retrieval and recommendation steps are async/await-based
+5. **Incremental Refresh**: local numpy index and Azure AI Search are refreshed through ingestion scripts on stale or empty state
 
 ### Scalability
 
-- Handles concurrent users through async architecture
-- Agent coordination is stateless and scalable
-- Can add more specialized agents without refactoring
+- Handles concurrent users through async API calls
+- Retrieval is layered across Azure AI Search, local vector files, and Azure DevOps metadata
+- The indexing pipeline is refreshable without requiring an external cache layer for the active retrieval path
 
 ## Extension Points
 
@@ -406,11 +425,13 @@ python scripts/ingest_wiki.py      # Test wiki ingestion
    - Verify Azure DevOps has historical data
    - Check wiki pages are accessible
    - Review query keywords
+   - Confirm Azure AI Search and local vector index are populated via the ingestion scripts
 
 3. **Slow Performance**
-   - Enable Redis caching
-   - Check Azure DevOps API rate limits
-   - Monitor concurrent requests
+   - Check Azure AI Search latency and semantic configuration
+   - Review Azure DevOps API rate limits
+   - Monitor concurrent requests and Azure Monitor traces
+   - Rebuild the local index when stale by running the refresh path or waiting for the 48-hour automatic refresh
 
 ## Future Enhancements
 

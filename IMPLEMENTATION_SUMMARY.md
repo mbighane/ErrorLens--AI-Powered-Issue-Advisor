@@ -14,6 +14,18 @@ Successfully implemented a **coordinated multi-agent system** for comprehensive 
 
 ## 🏗️ Architecture Implementation
 
+### Current Retrieval Architecture
+
+The live implementation uses a hybrid retrieval pipeline rather than a Redis-backed vector store:
+
+| Layer | Component | Purpose | Status |
+|-------|-----------|---------|--------|
+| Managed search | `azure_ai_search_service.py` | Azure AI Search semantic retrieval | ✅ |
+| Local fallback | `local_vector_search_service.py` | Prompt embedding + local numpy index fallback | ✅ |
+| Exact match | `azure_devops_connector.py` + `hybrid_bug_search_service.py` | Keyword/title/theme scoring through Azure DevOps | ✅ |
+| Recommendation | `recommendation_agent.py` | Synthesizes evidence into fixes and guidance | ✅ |
+| Monitoring | Azure Monitor / Application Insights | Live tracing and telemetry | ✅ |
+
 ### Multi-Agent System (5 Specialized Agents)
 
 | Agent | File | Purpose | Status |
@@ -30,6 +42,7 @@ Successfully implemented a **coordinated multi-agent system** for comprehensive 
 |-----------|------|---------|--------|
 | Base Agent | `base_agent.py` | Abstract base class | ✅ |
 | Orchestrator | `orchestrator_agent.py` | Main coordinator | ✅ |
+| Config | `backend/app/config.py` | Central settings for Azure OpenAI, Azure AI Search, monitoring, and thresholds | ✅ |
 
 ---
 
@@ -47,13 +60,16 @@ backend/app/agents/
 └── issue_solver_agent.py             ⚠️  LEGACY - Can be deprecated
 ```
 
-### Services (Azure DevOps Integration)
+### Services (Retrieval + Azure Integration)
 ```
 backend/app/services/
-├── azure_devops_connector.py         ✅ NEW - Azure DevOps API connection
-├── ado_bug_search_service.py         ✅ NEW - Bug search from ADO
-├── ado_wiki_search_service.py        ✅ NEW - Wiki search from ADO
-└── azure_devops_service.py           ⚠️  LEGACY
+├── azure_devops_connector.py         ✅ UPDATED - Azure DevOps API connection and match logic
+├── ado_bug_search_service.py         ✅ UPDATED - Hybrid bug retrieval orchestration
+├── ado_wiki_search_service.py        ✅ UPDATED - Wiki search with Azure AI Search + local fallback
+├── azure_ai_search_service.py        ✅ NEW - Managed Azure AI Search retrieval layer
+├── hybrid_bug_search_service.py      ✅ UPDATED - Semantic + exact-match hybrid ranking
+├── local_vector_search_service.py    ✅ UPDATED - Embedding generation and local vector search
+└── redis_vector_search_service.py    ⚠️  REMOVED from active path
 ```
 
 ### API Endpoints
@@ -159,8 +175,8 @@ User Query
 ### 3️⃣ Integration Context Agent (🔗)
 - ✅ Identifies affected modules (Auth, Database, Cache, etc.)
 - ✅ Maps API dependencies (REST, GraphQL, WebSocket, etc.)
-- ✅ Recognizes external dependencies (Redis, PostgreSQL, etc.)
-- ✅ Identifies services (Azure, AWS, Jenkins, etc.)
+- ✅ Recognizes current platform dependencies (Azure DevOps, Azure AI Search, Azure OpenAI, local vector index)
+- ✅ Identifies services (Azure Monitor, OpenAI, Azure Search, DevOps)
 - ✅ Builds context summary
 
 ### 4️⃣ Recommendation Agent (🧪)
@@ -169,6 +185,7 @@ User Query
 - ✅ Creates detailed troubleshooting checklist
 - ✅ Calculates confidence levels
 - ✅ Validates recommendations
+- ✅ Uses Azure OpenAI when configured, otherwise falls back to standard OpenAI
 
 ### 5️⃣ Orchestrator Agent (🧠)
 - ✅ Receives user query
@@ -176,6 +193,8 @@ User Query
 - ✅ Manages workflow execution
 - ✅ Logs detailed process steps
 - ✅ Assembles final response
+- ✅ Triggers local index refresh when vector files are missing, empty, or stale
+- ✅ Refreshes Azure AI Search through the same ingestion path
 
 ---
 
@@ -204,7 +223,11 @@ Response:
 
 ### Integration Points
 ```
-Streamlit Frontend → FastAPI Backend → Orchestrator → All Agents → Azure DevOps
+Streamlit Frontend → FastAPI Backend → Orchestrator → Hybrid Search Service
+                              ├─ Azure AI Search (preferred semantic layer)
+                              ├─ Local Vector Index (fallback / persisted embeddings)
+                              ├─ Azure DevOps exact-match and metadata lookup
+                              └─ Azure OpenAI / OpenAI recommendation synthesis
 ```
 
 ---
@@ -256,15 +279,23 @@ AZURE_DEVOPS_PROJECT=your_project
 AZURE_DEVOPS_TOKEN=your_personal_access_token
 ```
 
-### OpenAI
+### Azure OpenAI / OpenAI
 ```env
-OPENAI_API_KEY=your_api_key
+AZURE_OPENAI_API_KEY=your_azure_openai_key
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+
+OPENAI_API_KEY=your_openai_key
 ```
 
-### Redis
+### Azure AI Search
 ```env
-REDIS_HOST=localhost
-REDIS_PORT=6379
+AZURE_SEARCH_API_KEY=your_search_key
+AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+AZURE_SEARCH_INDEX_NAME=bug-search-index
+AZURE_SEARCH_SEMANTIC_CONFIGURATION=default
+AZURE_SEARCH_USE_SEMANTIC_SEARCH=true
 ```
 
 ---

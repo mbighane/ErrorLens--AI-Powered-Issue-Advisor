@@ -89,45 +89,45 @@ The `OrchestratorAgent` uses a LangGraph `StateGraph` to enforce a reproducible,
 ### Vector Search Pipeline
 
 ```
-Azure DevOps bugs/wiki
+Azure DevOps bugs + wiki
         │
   scripts/ingest_bugs.py
   scripts/ingest_wiki.py
         │
         ▼
-  OpenAI text-embedding-3-small
-  (1536-dim embeddings)
+  Azure OpenAI embeddings
+  (chat and embedding deployments, with OpenAI fallback when Azure is unavailable)
         │
         ▼
   data/vector_index/
     bugs_embeddings.npy   ←─┐
     bugs_metadata.json       │  LocalVectorSearchService
-    wiki_embeddings.npy   ←─┤  (numpy cosine similarity)
+    wiki_embeddings.npy   ←─┤  (numpy cosine similarity + re-ranking)
     wiki_metadata.json       │
                           ───┘
                           fallback ↓
-                     RedisVectorSearchService
-                     (Redis Stack + LlamaIndex)
+           Azure AI Search semantic retrieval (preferred managed layer)
 ```
 
-Embeddings are persisted on disk so the index survives restarts without requiring Redis Stack. Redis is used as a fallback when available.
+The live stack uses a layered retrieval pipeline: Azure AI Search is preferred for semantic matching, while the local numpy index remains as a persisted fallback and re-ranking source. The app also merges exact-match and metadata-based results from Azure DevOps so the final rankings are more grounded and relevant than a single vector search alone.
 
-**Auto-refresh on startup**: Every time the FastAPI server starts, `main.py` checks the age of the vector index files. If the index is **missing**, **empty**, or **older than 48 hours**, the ingest scripts are automatically re-run to pull fresh bugs and wiki pages from Azure DevOps and rebuild the embeddings — ensuring the knowledge base stays current without manual intervention.
+**Auto-refresh on startup**: Every time the FastAPI server starts, the backend checks the age of the local vector files. If the index is **missing**, **empty**, or **older than the configured refresh window**, the ingest scripts are automatically re-run to pull fresh bugs and wiki pages from Azure DevOps and refresh both the local and Azure-backed indexes.
 
 ## Tech Stack
 
 - **Backend**: FastAPI, Python
 - **Frontend**: Streamlit
-- **Cache/Vector Store**: Redis
-- **AI**: OpenAI GPT-4o-mini, OpenAI Embeddings
-- **Vector Search**: Redis with LlamaIndex
-- **Orchestration**: LangGraph (StateGraph + MemorySaver)
+- **AI**: Azure OpenAI Service with OpenAI fallback
+- **Vector Search**: Azure AI Search + local numpy vector fallback
+- **Monitoring**: Azure Monitor / Application Insights tracing
+- **Orchestration**: LangGraph-style coordination with modular retrieval and recommendation stages
 
 ## Prerequisites
 
 - Python 3.8+
-- Redis instance
-- OpenAI API key
+- Azure OpenAI resource access (or OpenAI API key fallback)
+- Azure AI Search resource access
+- Azure Monitor / Application Insights connection string (optional but recommended)
 - Token to connect to Azure DevOps
 
 ## Installation
@@ -155,9 +155,20 @@ Embeddings are persisted on disk so the index survives restarts without requirin
 4. **Set up environment variables**:
    Create a `.env` file in the root directory:
    ```env
-   REDIS_HOST=localhost
-   REDIS_PORT=6379
+   AZURE_OPENAI_API_KEY=your_azure_openai_key
+   AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+   AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini
+   AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+
    OPENAI_API_KEY=your_openai_api_key
+
+   AZURE_SEARCH_API_KEY=your_search_key
+   AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+   AZURE_SEARCH_INDEX_NAME=bug-search-index
+   AZURE_SEARCH_SEMANTIC_CONFIGURATION=default
+   AZURE_SEARCH_USE_SEMANTIC_SEARCH=true
+
+   APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=...
    AZURE_DEVOPS_ORG=your_organization
    AZURE_DEVOPS_PROJECT=your_project
    AZURE_DEVOPS_TOKEN=your_personal_access_token
@@ -213,7 +224,7 @@ The web interface will be available at: http://localhost:8501
   ```
 
 ### Bug Search
-- `POST /api/bugs/search` - Search historical Azure DevOps bugs
+- `POST /api/bugs/search` - Search historical Azure DevOps bugs using hybrid retrieval
   ```json
   {
     "query": "string"
@@ -221,7 +232,7 @@ The web interface will be available at: http://localhost:8501
   ```
 
 ### Wiki Search
-- `POST /api/wiki/search` - Search Azure DevOps wiki knowledge
+- `POST /api/wiki/search` - Search Azure DevOps wiki knowledge using the same hybrid retrieval path
   ```json
   {
     "query": "string"
@@ -229,7 +240,7 @@ The web interface will be available at: http://localhost:8501
   ```
 
 ### Admin — Manual Data Refresh
-- `POST /api/admin/refresh` - Manually pull fresh data from Azure DevOps and rebuild the vector index (both local numpy and Redis)
+- `POST /api/admin/refresh` - Manually pull fresh data from Azure DevOps and rebuild the local vector index and Azure AI Search content
   ```json
   // Response
   {
@@ -241,7 +252,7 @@ The web interface will be available at: http://localhost:8501
   }
   ```
 
-- `GET /api/admin/index-status` - Check the current age and size of the vector index
+- `GET /api/admin/index-status` - Check the current age and size of the vector index files and whether the refresh threshold has been reached
   ```json
   // Response
   {
@@ -313,16 +324,17 @@ graph TB
     ADOC[AzureDevOpsConnector]
   end
 
-  subgraph RAG[RAG Pipeline - Vector Embeddings]
-    LV[LocalVectorSearchService<br/>OpenAI text-embedding-3-small<br/>numpy cosine similarity]
-    RV[RedisVectorSearchService<br/>Redis Stack fallback]
+  subgraph RAG[RAG Pipeline - Hybrid Retrieval]
+    LV[LocalVectorSearchService<br/>Azure OpenAI embeddings<br/>numpy cosine similarity]
+    AI[AzureAISearchService<br/>Azure AI Search semantic search]
     VI[(Vector Index<br/>data/vector_index/<br/>bugs_embeddings.npy<br/>wiki_embeddings.npy)]
     ING[Ingest Scripts<br/>scripts/ingest_bugs.py<br/>scripts/ingest_wiki.py]
   end
 
   subgraph DM[Data & External Systems]
     ADO[(Azure DevOps<br/>Work Items + Wiki Repos)]
-    OPENAI[OpenAI API<br/>GPT + Embeddings]
+    OPENAI[Azure OpenAI / OpenAI API<br/>GPT + Embeddings]
+    APPI[Azure Monitor<br/>Application Insights]
     SC[Issue Schemas<br/>backend/app/schemas/issue_schemas.py]
   end
 
@@ -342,19 +354,23 @@ graph TB
   RA -- root_causes + suggested_fixes --> ORCH
   ORCH -- assembles IssueSolveResponse --> EP
 
+  BS --> AI
+  WS --> AI
   BS --> LV
   WS --> LV
+  AI --> OPENAI
   LV -- embed query --> OPENAI
   OPENAI -- query embedding --> LV
   LV <--> VI
-  LV -- fallback --> RV
   BS --> ADOC --> ADO
   WS --> ADOC
   ING -- index bugs/wiki --> LV
+  ING -- upsert documents --> AI
   ADO -- raw data --> ING
 
   RA --> OPENAI
   OPENAI -- GPT fix suggestions --> RA
+  API -. trace telemetry .-> APPI
   EP --> API --> ST --> U
 ```
 
@@ -522,18 +538,29 @@ source .venv/bin/activate
    AZURE_DEVOPS_TOKEN=your_pat_token
    ```
 
-### 3. Redis Setup
+### 3. Azure AI Search Configuration
 
-1. Install Redis server locally or use cloud Redis
-2. Ensure Redis is running on default port 6379
-3. Initialize vector store using setup scripts in `scripts/`
-
-### 4. OpenAI Configuration
-
-1. Get API key from OpenAI platform
-2. Add to `.env` file:
+1. Create or update the Azure AI Search service and index used by the app
+2. Ensure the index name, semantic configuration, and search key match the app settings
+3. Add the service details to `.env`:
    ```
-   OPENAI_API_KEY=your_actual_api_key_here
+   AZURE_SEARCH_API_KEY=your_search_key
+   AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+   AZURE_SEARCH_INDEX_NAME=bug-search-index
+   AZURE_SEARCH_SEMANTIC_CONFIGURATION=default
+   AZURE_SEARCH_USE_SEMANTIC_SEARCH=true
+   ```
+
+### 4. Azure OpenAI / OpenAI Configuration
+
+1. Configure the Azure OpenAI deployment names for chat and embeddings or provide a standard OpenAI fallback key
+2. Add to `.env`:
+   ```
+   AZURE_OPENAI_API_KEY=your_azure_openai_key
+   AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+   AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini
+   AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+   OPENAI_API_KEY=your_openai_api_key
    ```
 
 ### 5. Data Ingestion Setup
@@ -546,8 +573,9 @@ python scripts/ingest_wiki.py
 
 This will:
 - Fetch bugs and wiki from Azure DevOps
-- Generate embeddings
-- Store in Redis vector database
+- Generate embeddings with the configured embedding model
+- Store the local vector index on disk
+- Upsert documents into Azure AI Search when configured
 
 ## Configuration
 
@@ -555,9 +583,17 @@ This will:
 
 Required environment variables in `.env`:
 ```env
-REDIS_HOST=localhost
-REDIS_PORT=6379
+AZURE_OPENAI_API_KEY=your_azure_openai_key
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 OPENAI_API_KEY=your_openai_api_key
+AZURE_SEARCH_API_KEY=your_search_key
+AZURE_SEARCH_ENDPOINT=https://<service>.search.windows.net
+AZURE_SEARCH_INDEX_NAME=bug-search-index
+AZURE_SEARCH_SEMANTIC_CONFIGURATION=default
+AZURE_SEARCH_USE_SEMANTIC_SEARCH=true
+APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=...
 AZURE_DEVOPS_ORG=your_organization
 AZURE_DEVOPS_PROJECT=your_project
 AZURE_DEVOPS_TOKEN=your_personal_access_token
@@ -608,6 +644,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- Built with FastAPI, Streamlit, and OpenAI
-- Vector search powered by Redis and LlamaIndex
-- Azure DevOps integration for knowledge base
+- Built with FastAPI, Streamlit, Azure OpenAI, and Azure AI Search
+- Hybrid retrieval powered by Azure AI Search plus local vector indexing
+- Azure Monitor telemetry and Azure DevOps integration for knowledge base
