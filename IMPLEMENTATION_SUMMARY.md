@@ -81,7 +81,7 @@ Root level:
 ### Scripts (Data Ingestion)
 ```
 scripts/
-├── ingest_bugs.py                    ✅ UPDATED - Bug ingestion from ADO
+├── bugs.py                    ✅ UPDATED - Bug ingestion from ADO
 └── ingest_wiki.py                    ✅ UPDATED - Wiki ingestion from ADO
 ```
 

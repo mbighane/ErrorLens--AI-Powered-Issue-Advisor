@@ -32,7 +32,6 @@ from .azure_ai_monitoring import AzureAIMonitoring
 
 _EMBEDDING_MODEL = settings.azure_openai_embedding_deployment if settings.use_azure_openai else "text-embedding-3-small"
 _EMBEDDING_DIMS  = 1536
-_MAX_TEXT_CHARS  = 4000   # well under the model's token limit
 
 import re as _re
 
@@ -45,7 +44,7 @@ def _strip_html(text: str) -> str:
 
 
 def _truncate(text: str) -> str:
-    return (text or "")[:_MAX_TEXT_CHARS]
+    return (text or "")[:settings.max_embedding_text_chars]
 
 
 class LocalVectorSearchService:
@@ -68,6 +67,8 @@ class LocalVectorSearchService:
         self.enabled    = False
         self.init_error = ""
         self._client: Optional[OpenAI] = None
+        self._azure_client: Optional[AzureOpenAI] = None
+        self._using_azure_openai = False
 
         index_dir = Path(settings.vector_index_dir)
         self._bugs_emb_path  = index_dir / "bugs_embeddings.npy"
@@ -76,12 +77,14 @@ class LocalVectorSearchService:
         self._wiki_meta_path = index_dir / "wiki_metadata.json"
 
         try:
-            if settings.use_azure_openai:
-                self._client = AzureOpenAI(
+            if settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
+                self._azure_client = AzureOpenAI(
                     api_key=settings.azure_openai_api_key,
                     api_version=settings.azure_openai_api_version,
                     azure_endpoint=settings.azure_openai_endpoint,
                 )
+                self._client = self._azure_client
+                self._using_azure_openai = True
             elif settings.openai_api_key:
                 self._client = OpenAI(api_key=settings.openai_api_key)
             else:
@@ -90,6 +93,29 @@ class LocalVectorSearchService:
             self.enabled = True
         except Exception as exc:
             self.init_error = str(exc)
+
+    def _should_fallback_to_openai(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return (
+            settings.openai_api_key is not None
+            and settings.openai_api_key != ""
+            and self._using_azure_openai
+            and (
+                "404" in message
+                or "resource not found" in message
+                or "deployment" in message.lower()
+                or "model not found" in message.lower()
+            )
+        )
+
+    def _ensure_openai_fallback(self, exc: Exception) -> bool:
+        if not self._should_fallback_to_openai(exc):
+            return False
+
+        print("[LocalVectorSearch] Azure OpenAI deployment unavailable, falling back to OpenAI API.")
+        self._using_azure_openai = False
+        self._client = OpenAI(api_key=settings.openai_api_key)
+        return True
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -108,12 +134,21 @@ class LocalVectorSearchService:
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Embed a batch of texts with a single OpenAI/Azure OpenAI API call."""
         cleaned = [_truncate(t) or " " for t in texts]
-        embedding_model = settings.azure_openai_embedding_deployment if settings.use_azure_openai else _EMBEDDING_MODEL
-        response = self._client.embeddings.create(
-            input=cleaned,
-            model=embedding_model,
-        )
-        return [item.embedding for item in response.data]
+        embedding_model = settings.azure_openai_embedding_deployment if self._using_azure_openai else _EMBEDDING_MODEL
+        try:
+            response = self._client.embeddings.create(
+                input=cleaned,
+                model=embedding_model,
+            )
+            return [item.embedding for item in response.data]
+        except Exception as exc:
+            if self._ensure_openai_fallback(exc):
+                response = self._client.embeddings.create(
+                    input=cleaned,
+                    model="text-embedding-3-small",
+                )
+                return [item.embedding for item in response.data]
+            raise
 
     def _embed_query(self, query: str) -> np.ndarray:
         expanded = self._expand_query(query)
@@ -128,7 +163,7 @@ class LocalVectorSearchService:
         """
         monitoring = AzureAIMonitoring()
         try:
-            model_name = settings.azure_openai_chat_deployment if settings.use_azure_openai else settings.openai_chat_model
+            model_name = settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model
             response = self._client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -136,15 +171,14 @@ class LocalVectorSearchService:
                         "role": "system",
                         "content": (
                             "You are a technical search assistant. "
-                            "Given a bug report query, rewrite it as a rich technical search string "
-                            "by adding relevant synonyms, underlying technologies, and root-cause terms. "
-                            "Keep it under 40 words. Return only the expanded text, no explanation."
+                            "Given a bug report query, rewrite it as a concise technical search string "
+                            "using plain, likely search terms. Keep it under 35 words. Return only the expanded text, no explanation."
                         ),
                     },
                     {"role": "user", "content": query},
                 ],
-                temperature=0.2,
-                max_tokens=80,
+                temperature=settings.query_expansion_temperature,
+                max_tokens=settings.query_expansion_max_tokens,
             )
             expanded = response.choices[0].message.content.strip()
             monitoring.trace_event(
@@ -159,11 +193,39 @@ class LocalVectorSearchService:
             print(f"[VectorSearch] Query expanded: '{query}' -> '{expanded}'")
             return expanded
         except Exception as exc:
+            if self._ensure_openai_fallback(exc):
+                response = self._client.chat.completions.create(
+                    model=settings.openai_chat_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a technical search assistant. "
+                                "Given a bug report query, rewrite it as a concise technical search string "
+                                "using plain, likely search terms. Keep it under 35 words. Return only the expanded text, no explanation."
+                            ),
+                        },
+                        {"role": "user", "content": query},
+                    ],
+                    temperature=settings.query_expansion_temperature,
+                    max_tokens=settings.query_expansion_max_tokens,
+                )
+                expanded = response.choices[0].message.content.strip()
+                monitoring.trace_event(
+                    "vector_query_expansion",
+                    {
+                        "status": "success",
+                        "model": settings.openai_chat_model,
+                        "query": query,
+                        "expanded_query": expanded,
+                    },
+                )
+                return expanded
             monitoring.trace_event(
                 "vector_query_expansion",
                 {
                     "status": "error",
-                    "model": settings.azure_openai_chat_deployment if settings.use_azure_openai else settings.openai_chat_model,
+                    "model": settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model,
                     "query": query,
                     "error": str(exc),
                 },
@@ -250,8 +312,9 @@ class LocalVectorSearchService:
         """
         monitoring = AzureAIMonitoring()
         try:
+            model_name = settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model
             response = self._client.chat.completions.create(
-                model=settings.openai_chat_model,
+                model=model_name,
                 messages=[
                     {
                         "role": "system",
@@ -267,15 +330,15 @@ class LocalVectorSearchService:
                     },
                     {"role": "user", "content": query},
                 ],
-                temperature=0.2,
-                max_tokens=80,
+                temperature=settings.query_expansion_temperature,
+                max_tokens=settings.query_expansion_max_tokens,
             )
             expanded = response.choices[0].message.content.strip()
             monitoring.trace_event(
                 "wiki_query_expansion",
                 {
                     "status": "success",
-                    "model": settings.openai_chat_model,
+                    "model": model_name,
                     "query": query,
                     "expanded_query": expanded,
                 },
@@ -283,11 +346,43 @@ class LocalVectorSearchService:
             print(f"[VectorSearch] Wiki query expanded: '{query}' -> '{expanded}'")
             return expanded
         except Exception as exc:
+            if self._ensure_openai_fallback(exc):
+                response = self._client.chat.completions.create(
+                    model=settings.openai_chat_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a technical documentation search assistant. "
+                                "Given a query about a software issue, rewrite it as a focused search string "
+                                "suited for finding wiki pages, lessons learned, troubleshooting guides, "
+                                "and runbooks. Focus on the specific symptom and its closest technical domain. "
+                                "Do NOT add generic infrastructure, database, or platform terms unless they "
+                                "are central to the symptom itself. "
+                                "Keep it under 40 words. Return only the expanded text, no explanation."
+                            ),
+                        },
+                        {"role": "user", "content": query},
+                    ],
+                    temperature=settings.query_expansion_temperature,
+                    max_tokens=settings.query_expansion_max_tokens,
+                )
+                expanded = response.choices[0].message.content.strip()
+                monitoring.trace_event(
+                    "wiki_query_expansion",
+                    {
+                        "status": "success",
+                        "model": settings.openai_chat_model,
+                        "query": query,
+                        "expanded_query": expanded,
+                    },
+                )
+                return expanded
             monitoring.trace_event(
                 "wiki_query_expansion",
                 {
                     "status": "error",
-                    "model": settings.openai_chat_model,
+                    "model": settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model,
                     "query": query,
                     "error": str(exc),
                 },
@@ -351,8 +446,8 @@ class LocalVectorSearchService:
                 sec_tokens = set(_re.findall(r"[a-z]+", sec_text))
                 overlap = expanded_tokens & sec_tokens
                 if overlap:
-                    # +0.04 per matching token, capped at +0.15
-                    bonus = min(0.04 * len(overlap), 0.15)
+                    # Keyword relevance bonus increases with token overlap but stays capped.
+                    bonus = min(settings.wiki_keyword_bonus_per_match * len(overlap), settings.wiki_keyword_bonus_cap)
                     scores[i] = float(scores[i]) + bonus
                     print(f"[VectorSearch] Content bonus +{bonus:.2f} for section "
                           f"'{item.get('section_title')}' (matched: {sorted(overlap)[:5]})")
@@ -364,7 +459,8 @@ class LocalVectorSearchService:
         for idx in top_indices:
             score = float(scores[idx])
             if score > min_score:
-                results.append({**metadata[idx], "similarity_score": score})
+                record = {**metadata[idx], "similarity_score": score, "source": "local_vector_index"}
+                results.append(record)
         return results
 
     # ------------------------------------------------------------------
@@ -509,7 +605,7 @@ class LocalVectorSearchService:
             # ── BUILD ENRICHED QUERY ─────────────────────────────────────
             context_lines: List[str] = []
             for tb in top_bugs:
-                snippet = text_of(tb)[:300]
+                snippet = text_of(tb)[:settings.query_context_snippet_chars]
                 if snippet.strip():
                     context_lines.append(snippet)
 
@@ -627,7 +723,7 @@ class LocalVectorSearchService:
                 f"Title: {item.get('title', '')}",
                 f"Section: {sec}" if sec else "",
                 f"Path: {item.get('path', '')}",
-                f"Content: {(item.get('content', '') or '')[:2000]}",
+                f"Content: {(item.get('content', '') or '')[:settings.wiki_content_preview_chars]}",
             ]
             return "\n".join(p for p in parts if p.strip() and p.split(": ", 1)[-1].strip())
 
@@ -642,13 +738,14 @@ class LocalVectorSearchService:
             meta_path=self._wiki_meta_path,
         )
 
-    def search_wiki_pages(self, query: str, top_k: int = 5, min_score: float = 0.28) -> List[Dict[str, Any]]:
+    def search_wiki_pages(self, query: str, top_k: int = 5, min_score: Optional[float] = None) -> List[Dict[str, Any]]:
         """Search the local wiki embedding index for the closest matches."""
+        effective_min_score = settings.search_similarity_threshold if min_score is None else min_score
         return self._search_items(
             query,
             self._wiki_emb_path,
             self._wiki_meta_path,
             top_k,
-            min_score=min_score,
+            min_score=effective_min_score,
             wiki_query=True,
         )

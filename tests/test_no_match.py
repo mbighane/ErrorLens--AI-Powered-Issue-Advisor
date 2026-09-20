@@ -15,6 +15,8 @@ _awss.AzureDevOpsConnector = _DummyConnector
 from backend.app.services.ado_bug_search_service import ADOBugSearchService
 from backend.app.services.ado_wiki_search_service import ADOWikiSearchService
 from backend.app.agents.recommendation_agent import RecommendationAgent
+from backend.app.config import settings
+from backend.app.services.local_vector_search_service import LocalVectorSearchService
 
 
 @pytest.mark.asyncio
@@ -72,3 +74,11 @@ def test_recommendation_agent_respects_no_match_sentinel():
     # the agent should return the explicit "no match" sentinel and avoid calling the LLM.
     result = agent._generate_ai_fixes(original_query="q", similar_bugs="no match", root_causes=[])
     assert result == "no match"
+
+
+def test_search_thresholds_are_more_permissive():
+    assert settings.search_similarity_threshold < 0.08
+    assert settings.title_overlap_min_score < 0.25
+    assert settings.semantic_title_overlap_min_score <= 0.05
+
+

@@ -28,19 +28,21 @@ class ADOWikiSearchService:
                 wiki_pages = self.azure_ai_search_service.search(query, top_k)
                 if wiki_pages:
                     wiki_pages = [max(wiki_pages, key=lambda p: p.get("similarity_score", 0))]
+                    wiki_pages[0].setdefault("source", "azure_ai_search")
                     print(f"[VectorSearch] Azure AI Search returned top-1 wiki result (score={wiki_pages[0].get('similarity_score', 0):.4f}) for query.")
             except Exception as exc:
                 print(f"[VectorSearch] Azure AI Search wiki search failed: {exc}")
                 wiki_pages = []
 
         # 2. Local vector search — preferred when index has been seeded.
-        if not wiki_pages and self.local_vector_service.enabled and self.local_vector_service.has_wiki_indexed():
+        if not wiki_pages and self.local_vector_service.has_wiki_indexed():
             try:
                 wiki_pages = self.local_vector_service.search_wiki_pages(query, top_k)
                 # Keep only the highest-scoring result to avoid surfacing loosely
                 # related sections from the same parent page.
                 if wiki_pages:
                     wiki_pages = [max(wiki_pages, key=lambda p: p.get("similarity_score", 0))]
+                    wiki_pages[0].setdefault("source", "local_vector_index")
                     print(f"[VectorSearch] Local index returned top-1 wiki section (score={wiki_pages[0].get('similarity_score', 0):.4f}) for query.")
             except Exception as exc:
                 print(f"[VectorSearch] Local wiki search failed: {exc}")
@@ -48,6 +50,8 @@ class ADOWikiSearchService:
 
         # 3. ADO git-based wiki search fallback.
         if not wiki_pages:
+            if not hasattr(self.connector, "search_wiki_pages"):
+                return "no match"
             wiki_pages = await self.connector.search_wiki_pages(query, top_k)
             # Lazily index fetched pages so subsequent queries hit vector search.
             if wiki_pages:
@@ -75,6 +79,7 @@ class ADOWikiSearchService:
                 title=page["title"],
                 content=safe_content,
                 similarity_score=page.get("similarity_score", 0.8),
+                source=page.get("source", "local_vector_index"),
                 path=page.get("path"),
                 url=page.get("url"),
             ))

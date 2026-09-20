@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-INDEX_REFRESH_SECONDS = 48 * 3600  # 48 hours
+INDEX_REFRESH_SECONDS = settings.index_refresh_hours * 3600
 
 # Project root = two levels up from this file (backend/app/main.py)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

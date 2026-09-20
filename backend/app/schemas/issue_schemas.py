@@ -20,6 +20,7 @@ class BugTicket(BaseModel):
     state: Optional[str] = None
     assigned_to: Optional[str] = None
     similarity_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    source: Optional[str] = None
     url: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -32,6 +33,7 @@ class WikiResult(BaseModel):
     title: str
     content: str = ""
     similarity_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    source: Optional[str] = None
     path: Optional[str] = None
     url: Optional[str] = None
 

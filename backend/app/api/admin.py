@@ -32,8 +32,10 @@ class RefreshStatus(BaseModel):
 @router.post("/refresh", response_model=RefreshStatus)
 async def refresh_index():
     """
-    Manually trigger a fresh pull from Azure DevOps and rebuild the vector index.
+    Manually trigger a fresh pull from Azure DevOps and rebuild both the local
+    vector index and the Azure AI Search index used by live retrieval.
 
+    - Recreates the Azure AI Search index schema to match the current document model
     - Fetches latest bugs and wiki pages from Azure DevOps
     - Rebuilds the local numpy vector index (data/vector_index/)
     - Use this whenever new bugs have been filed or wiki pages updated and you
@@ -46,6 +48,9 @@ async def refresh_index():
     _env["PYTHONPATH"] = str(PROJECT_ROOT)
     _env["PYTHONIOENCODING"] = "utf-8"
 
+    # Azure AI Search is refreshed incrementally using stable document IDs.
+    # We avoid recreating the entire index on every manual refresh because the
+    # ingestion scripts already upsert the latest Azure DevOps content by id.
     for name, script in [("bugs", "scripts/ingest_bugs.py"), ("wiki", "scripts/ingest_wiki.py")]:
         result = await loop.run_in_executor(
             None,

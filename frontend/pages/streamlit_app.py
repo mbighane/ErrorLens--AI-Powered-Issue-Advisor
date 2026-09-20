@@ -106,7 +106,7 @@ def render_result(result: dict, query: str = "") -> None:
         not result.get("suggested_fixes")
     )
     if is_sentinel or empty_body:
-        st.info("No sufficiently similar historical bugs or wiki guidance were found. I can't provide a confident recommendation.")
+        st.warning("No matching bug/wiki found from Azure AI Search or the local vector index. I can still provide a general recommendation, but there is no strong historical match to cite.")
         st.markdown(result.get("analysis", "No analysis returned."))
         return
 
@@ -121,7 +121,8 @@ def render_result(result: dict, query: str = "") -> None:
         for idx, bug in enumerate(similar_bugs, 1):
             title = bug.get("title", "Untitled")
             score = bug.get("similarity_score", 0.0)
-            st.markdown(f"{idx}. **{title}** ({score:.2f})")
+            source = bug.get("source", "local_vector_index")
+            st.markdown(f"{idx}. **{title}** ({score:.2f}) — Source: {source.replace('_', ' ').title()}")
 
             bug_description = clean_text(str(bug.get("description", "")))
             root_cause_analysis = extract_root_cause_analysis(bug)
@@ -142,10 +143,11 @@ def render_result(result: dict, query: str = "") -> None:
         for page in wiki_with_content:
             title = page.get("title", "Untitled")
             score = page.get("similarity_score", 0.0)
+            source = page.get("source", "local_vector_index")
             content = page.get("content", "").strip()
             url = page.get("url", "")
             snippet = extract_relevant_snippet(content, query) if query else content
-            st.markdown(f"- **{title}** ({score:.2f})")
+            st.markdown(f"- **{title}** ({score:.2f}) — Source: {source.replace('_', ' ').title()}")
             with st.expander(f"Lessons from: {title}"):
                 st.markdown(snippet)
                 if url:

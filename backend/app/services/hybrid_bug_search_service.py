@@ -41,9 +41,9 @@ class HybridBugSearchService:
         self.connector = AzureDevOpsConnector()
 
         # Tuning parameters
-        self.SEMANTIC_WEIGHT = 0.6
-        self.EXACT_MATCH_WEIGHT = 0.4
-        self.RRF_K = 60  # reciprocal rank fusion smoothing factor
+        self.SEMANTIC_WEIGHT = settings.hybrid_semantic_weight
+        self.EXACT_MATCH_WEIGHT = settings.hybrid_exact_match_weight
+        self.RRF_K = settings.hybrid_rrf_k
 
     async def search_bugs_hybrid(self, query: str, top_k: int = 5) -> Union[List[BugResult], str]:
         """
@@ -107,19 +107,28 @@ class HybridBugSearchService:
             try:
                 bugs = self.azure_ai_search_service.search(query, top_k)
                 if bugs:
+                    for bug in bugs:
+                        bug.setdefault("source", "azure_ai_search")
                     print(f"[HybridSearch] Semantic: Azure AI Search returned {len(bugs)} bug(s)")
                     return bugs
             except Exception as exc:
                 print(f"[HybridSearch] Semantic: Azure AI Search failed: {exc}")
                 bugs = []
 
-        if self.local_vector_service.enabled and self.local_vector_service.has_bugs_indexed():
+        if self.local_vector_service.has_bugs_indexed():
             try:
                 bugs = self.local_vector_service.search_bugs(query, top_k)
                 if bugs:
+                    for bug in bugs:
+                        bug.setdefault("source", "local_vector_index")
                     print(f"[HybridSearch] Semantic: Local index returned {len(bugs)} bug(s)")
-                    bugs = self.local_vector_service.rescore_bugs_from_search_results(query, bugs)
-                    print(f"[HybridSearch] Semantic: Two-pass re-score applied to {len(bugs)} bug(s)")
+                    try:
+                        bugs = self.local_vector_service.rescore_bugs_from_search_results(query, bugs)
+                        for bug in bugs:
+                            bug.setdefault("source", "local_vector_index")
+                        print(f"[HybridSearch] Semantic: Two-pass re-score applied to {len(bugs)} bug(s)")
+                    except Exception as exc:
+                        print(f"[HybridSearch] Semantic: Local re-score failed: {exc}")
             except Exception as exc:
                 print(f"[HybridSearch] Semantic: Local search failed: {exc}")
                 bugs = []
@@ -143,6 +152,7 @@ class HybridBugSearchService:
                 for bug in bugs:
                     exact_score = self._calculate_exact_match_score(query, bug)
                     bug["exact_match_score"] = exact_score
+                    bug.setdefault("source", "azure_devops_exact_match")
                 print(f"[HybridSearch] Exact match: WIQL returned {len(bugs)} bug(s)")
                 return bugs
             else:
@@ -287,18 +297,26 @@ class HybridBugSearchService:
         for bug in bugs:
             score = float(bug.get("similarity_score", 0.0))
             title = str(bug.get("title", ""))
+            exact_match_score = float(bug.get("exact_match_score", 0.0))
             title_overlap = self._title_overlap_score(query, title)
 
-            # Accept if: title exact match, OR meets both thresholds
+            # Keep genuinely relevant exact matches even when the semantic score is low.
+            query_norm = self._normalize_text(query)
+            title_norm = self._normalize_text(title)
             title_exact = (
-                self._normalize_text(query) == self._normalize_text(title)
-                or self._normalize_text(query) in self._normalize_text(title)
-                or self._normalize_text(title) in self._normalize_text(query)
+                query_norm == title_norm
+                or query_norm in title_norm
+                or title_norm in query_norm
             )
 
-            if title_exact or (
-                score >= settings.search_similarity_threshold
-                and title_overlap >= 0.05
+            if (
+                title_exact
+                or exact_match_score >= settings.exact_match_min_score
+                or title_overlap >= settings.title_overlap_min_score
+                or (
+                    score >= settings.search_similarity_threshold
+                    and title_overlap >= settings.semantic_title_overlap_min_score
+                )
             ):
                 filtered.append(bug)
 
@@ -369,8 +387,9 @@ class HybridBugSearchService:
                     description=combined_description,
                     state=bug.get("state"),
                     assigned_to=bug.get("assigned_to"),
-                    url=bug.get("url"),
                     similarity_score=bug.get("similarity_score", 0.0),
+                    source=bug.get("source", "local_vector_index"),
+                    url=bug.get("url"),
                     metadata={
                         "root_cause_analysis": root_cause_analysis,
                         "suggested_fix": suggested_fix,

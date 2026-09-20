@@ -14,6 +14,7 @@ class ADOBugSearchService:
     
     def __init__(self):
         self.hybrid_service = HybridBugSearchService()
+        self.local_vector_service = self.hybrid_service.local_vector_service
 
     async def search_similar_bugs(self, query: str, top_k: int = 5) -> Union[List[BugResult], str]:
         """

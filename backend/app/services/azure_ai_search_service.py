@@ -37,12 +37,34 @@ class AzureAISearchService:
             return []
 
         try:
-            results = self._client.search(
-                search_text=query,
-                top=top_k,
-                query_type="simple",
-                select="id,title,description,content,path,url,category,source",
-            )
+            semantic_profile = (settings.azure_search_semantic_configuration or "default").strip()
+            selected_fields = [
+                field.strip()
+                for field in settings.azure_search_semantic_fields.split(",")
+                if field.strip()
+            ]
+            if not selected_fields:
+                raise ValueError("AZURE_SEARCH_SEMANTIC_FIELDS is empty")
+
+            search_kwargs: Dict[str, Any] = {
+                "search_text": query,
+                "top": top_k,
+                "select": ",".join(selected_fields),
+            }
+
+            if settings.azure_search_use_semantic_search:
+                if not semantic_profile:
+                    raise ValueError("AZURE_SEARCH_SEMANTIC_CONFIGURATION is not configured")
+                search_kwargs.update(
+                    {
+                        "query_type": "semantic",
+                        "semantic_configuration_name": semantic_profile,
+                    }
+                )
+            else:
+                search_kwargs["query_type"] = "simple"
+
+            results = self._client.search(**search_kwargs)
 
             normalized: List[Dict[str, Any]] = []
             for hit in results:
@@ -59,6 +81,7 @@ class AzureAISearchService:
                         "title": hit.get("title", ""),
                         "description": description,
                         "content": hit.get("content", description),
+                        "root_cause_analysis": hit.get("root_cause_analysis", ""),
                         "path": hit.get("path", ""),
                         "url": hit.get("url", ""),
                         "category": hit.get("category", ""),
