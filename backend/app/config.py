@@ -5,9 +5,21 @@ load_dotenv(override=True)
 
 
 class Settings:
+    # Deployment mode:
+    # - cloud: allow Azure OpenAI + Azure AI Search + Azure Monitor
+    # - on_prem: force local-only mode; no Azure calls at all
+    deployment_mode: str = os.getenv("DEPLOYMENT_MODE", "cloud").strip().lower()
+    should_use_local_only: bool = deployment_mode == "on_prem"
+
     # OpenAI compatibility settings
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4.1-mini")
+
+    # Ollama local LLM settings for on-prem deployments
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    ollama_enabled: bool = os.getenv("OLLAMA_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    ollama_embedding_model: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    ollama_chat_model: str = os.getenv("OLLAMA_CHAT_MODEL", "llama3.2")
 
     # Azure OpenAI Service settings.
     # Deployment names are resource-specific and must match the Azure OpenAI resource exactly.
@@ -18,11 +30,14 @@ class Settings:
     azure_openai_api_version: str = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
     azure_openai_chat_deployment: str = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "").strip()
     azure_openai_embedding_deployment: str = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "").strip()
-    use_azure_openai: bool = bool(
-        azure_openai_api_key
-        and azure_openai_endpoint
-        and azure_openai_chat_deployment
-        and azure_openai_embedding_deployment
+    use_azure_openai: bool = (
+        not should_use_local_only
+        and bool(
+            azure_openai_api_key
+            and azure_openai_endpoint
+            and azure_openai_chat_deployment
+            and azure_openai_embedding_deployment
+        )
     )
 
     # Azure AI Search configuration
@@ -36,14 +51,21 @@ class Settings:
         "id,title,description,content,root_cause_analysis,path,url,category,source",
     )
     azure_search_use_semantic_search: bool = (
-        os.getenv("AZURE_SEARCH_USE_SEMANTIC_SEARCH", "true").lower() in {"1", "true", "yes", "on"}
+        not should_use_local_only
+        and os.getenv("AZURE_SEARCH_USE_SEMANTIC_SEARCH", "true").lower() in {"1", "true", "yes", "on"}
         and bool(os.getenv("AZURE_SEARCH_SEMANTIC_CONFIGURATION", "default").strip())
     )
-    azure_search_enabled: bool = bool(azure_search_api_key and azure_search_endpoint and azure_search_index_name)
+    azure_search_enabled: bool = (
+        not should_use_local_only
+        and bool(azure_search_api_key and azure_search_endpoint and azure_search_index_name)
+    )
 
     # Azure Monitor / Application Insights configuration for live tracing
     azure_monitor_connection_string: str = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "") or os.getenv("AZURE_MONITOR_CONNECTION_STRING", "")
-    azure_monitor_tracing_enabled: bool = os.getenv("AZURE_MONITOR_TRACING_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    azure_monitor_tracing_enabled: bool = (
+        not should_use_local_only
+        and os.getenv("AZURE_MONITOR_TRACING_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+    )
     azure_monitor_trace_name: str = os.getenv("AZURE_MONITOR_TRACE_NAME", "errorlens-ai-trace")
 
     azure_devops_org: str = os.getenv("AZURE_DEVOPS_ORG", "")

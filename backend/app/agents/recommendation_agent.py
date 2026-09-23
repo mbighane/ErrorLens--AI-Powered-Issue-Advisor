@@ -86,34 +86,82 @@ class RecommendationAgent(Agent):
                 return "no match"
             # otherwise fall through and let root_causes provide context
 
-        if not (settings.use_azure_openai or settings.openai_api_key):
-            return None
+        if settings.should_use_local_only:
+            from ..services.ollama_client import OllamaClient
+            ollama = OllamaClient(settings.ollama_base_url)
+            if not ollama.is_available():
+                return None
+            client = ollama
+            model_name = settings.ollama_chat_model
+            using_azure = False
+        else:
+            if not (settings.use_azure_openai or settings.openai_api_key):
+                return None
+
+            monitoring = AzureAIMonitoring()
+            try:
+                client = None
+                model_name = settings.openai_chat_model
+                using_azure = False
+
+                if settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
+                    try:
+                        from openai import AzureOpenAI
+                        client = AzureOpenAI(
+                            api_key=settings.azure_openai_api_key,
+                            api_version=settings.azure_openai_api_version,
+                            azure_endpoint=settings.azure_openai_endpoint,
+                        )
+                        model_name = settings.azure_openai_chat_deployment
+                        using_azure = True
+                    except Exception:
+                        client = None
+
+                if client is None:
+                    if not settings.openai_api_key:
+                        return None
+                    from openai import OpenAI
+                    client = OpenAI(api_key=settings.openai_api_key)
+                    model_name = settings.openai_chat_model
+            except Exception:
+                return None
 
         monitoring = AzureAIMonitoring()
         try:
-            client = None
-            model_name = settings.openai_chat_model
-            using_azure = False
-
-            if settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
-                try:
-                    from openai import AzureOpenAI
-                    client = AzureOpenAI(
-                        api_key=settings.azure_openai_api_key,
-                        api_version=settings.azure_openai_api_version,
-                        azure_endpoint=settings.azure_openai_endpoint,
-                    )
-                    model_name = settings.azure_openai_chat_deployment
-                    using_azure = True
-                except Exception:
-                    client = None
-
-            if client is None:
-                if not settings.openai_api_key:
-                    return None
-                from openai import OpenAI
-                client = OpenAI(api_key=settings.openai_api_key)
-                model_name = settings.openai_chat_model
+            if settings.should_use_local_only:
+                response = client.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a senior software engineer. "
+                                "Provide precise, code-level debugging guidance. "
+                                "Always respond with valid JSON only — no markdown fences."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=model_name,
+                    temperature=settings.recommendation_temperature,
+                    max_tokens=settings.recommendation_max_tokens,
+                )
+            else:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a senior software engineer. "
+                                "Provide precise, code-level debugging guidance. "
+                                "Always respond with valid JSON only — no markdown fences."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=settings.recommendation_temperature,
+                    max_tokens=settings.recommendation_max_tokens,
+                )
 
             # Build context from similar bugs (guard if sentinel string)
             bugs_context_lines = []
@@ -172,22 +220,40 @@ class RecommendationAgent(Agent):
             )
 
             try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a senior software engineer. "
-                                "Provide precise, code-level debugging guidance. "
-                                "Always respond with valid JSON only — no markdown fences."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=settings.recommendation_temperature,
-                    max_tokens=settings.recommendation_max_tokens,
-                )
+                if settings.should_use_local_only:
+                    response = client.chat(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a senior software engineer. "
+                                    "Provide precise, code-level debugging guidance. "
+                                    "Always respond with valid JSON only — no markdown fences."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        model=model_name,
+                        temperature=settings.recommendation_temperature,
+                        max_tokens=settings.recommendation_max_tokens,
+                    )
+                else:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a senior software engineer. "
+                                    "Provide precise, code-level debugging guidance. "
+                                    "Always respond with valid JSON only — no markdown fences."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=settings.recommendation_temperature,
+                        max_tokens=settings.recommendation_max_tokens,
+                    )
             except Exception as exc:
                 error_text = str(exc).lower()
                 if (

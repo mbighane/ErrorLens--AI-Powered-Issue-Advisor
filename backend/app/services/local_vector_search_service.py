@@ -29,6 +29,7 @@ from openai import AzureOpenAI, OpenAI
 
 from ..config import settings
 from .azure_ai_monitoring import AzureAIMonitoring
+from .ollama_client import OllamaClient
 
 _EMBEDDING_MODEL = settings.azure_openai_embedding_deployment if settings.use_azure_openai else "text-embedding-3-small"
 _EMBEDDING_DIMS  = 1536
@@ -68,7 +69,9 @@ class LocalVectorSearchService:
         self.init_error = ""
         self._client: Optional[OpenAI] = None
         self._azure_client: Optional[AzureOpenAI] = None
+        self._ollama_client: Optional[OllamaClient] = None
         self._using_azure_openai = False
+        self._using_ollama = False
 
         index_dir = Path(settings.vector_index_dir)
         self._bugs_emb_path  = index_dir / "bugs_embeddings.npy"
@@ -77,7 +80,12 @@ class LocalVectorSearchService:
         self._wiki_meta_path = index_dir / "wiki_metadata.json"
 
         try:
-            if settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
+            if settings.should_use_local_only:
+                self._ollama_client = OllamaClient(settings.ollama_base_url)
+                self._using_ollama = self._ollama_client.is_available()
+                if not self._using_ollama:
+                    print("[LocalVectorSearch] Ollama not available in on-prem mode; local vector index will still load but LLM-based expansion is disabled.")
+            elif settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
                 self._azure_client = AzureOpenAI(
                     api_key=settings.azure_openai_api_key,
                     api_version=settings.azure_openai_api_version,
@@ -87,8 +95,11 @@ class LocalVectorSearchService:
                 self._using_azure_openai = True
             elif settings.openai_api_key:
                 self._client = OpenAI(api_key=settings.openai_api_key)
+            elif settings.ollama_enabled:
+                self._ollama_client = OllamaClient(settings.ollama_base_url)
+                self._using_ollama = self._ollama_client.is_available()
             else:
-                raise ValueError("No OpenAI or Azure OpenAI credentials configured — local vector search disabled")
+                raise ValueError("No OpenAI, Azure OpenAI, or Ollama credentials configured — local vector search disabled")
             index_dir.mkdir(parents=True, exist_ok=True)
             self.enabled = True
         except Exception as exc:
@@ -132,8 +143,14 @@ class LocalVectorSearchService:
     # ------------------------------------------------------------------
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed a batch of texts with a single OpenAI/Azure OpenAI API call."""
+        """Embed a batch of texts with a single Azure/OpenAI or local Ollama call."""
         cleaned = [_truncate(t) or " " for t in texts]
+
+        if self._using_ollama and self._ollama_client is not None:
+            if not self._ollama_client.is_available():
+                raise RuntimeError("Ollama is not available for embeddings")
+            return self._ollama_client.embed_texts(cleaned, model=settings.ollama_embedding_model)
+
         embedding_model = settings.azure_openai_embedding_deployment if self._using_azure_openai else _EMBEDDING_MODEL
         try:
             response = self._client.embeddings.create(
@@ -157,11 +174,53 @@ class LocalVectorSearchService:
 
     def _expand_query(self, query: str) -> str:
         """
-        Use GPT to expand the query with technical synonyms and related terms
-        so the embedding sits closer to root-cause level bug descriptions.
-        Falls back to the original query if GPT is unavailable.
+        Use a local Ollama or cloud LLM to expand the query with technical synonyms and related terms.
+        Falls back to the original query if the model is unavailable.
         """
         monitoring = AzureAIMonitoring()
+
+        if self._using_ollama and self._ollama_client is not None:
+            try:
+                expanded = self._ollama_client.chat(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a technical search assistant. "
+                                "Given a bug report query, rewrite it as a concise technical search string "
+                                "using plain, likely search terms. Keep it under 35 words. Return only the expanded text, no explanation."
+                            ),
+                        },
+                        {"role": "user", "content": query},
+                    ],
+                    model=settings.ollama_chat_model,
+                    temperature=settings.query_expansion_temperature,
+                    max_tokens=settings.query_expansion_max_tokens,
+                )
+                monitoring.trace_event(
+                    "vector_query_expansion",
+                    {
+                        "status": "success",
+                        "model": settings.ollama_chat_model,
+                        "query": query,
+                        "expanded_query": expanded,
+                    },
+                )
+                print(f"[VectorSearch] Query expanded via Ollama: '{query}' -> '{expanded}'")
+                return expanded
+            except Exception as exc:
+                monitoring.trace_event(
+                    "vector_query_expansion",
+                    {
+                        "status": "error",
+                        "model": settings.ollama_chat_model,
+                        "query": query,
+                        "error": str(exc),
+                    },
+                )
+                print(f"[VectorSearch] Ollama query expansion failed, using original: {exc}")
+                return query
+
         try:
             model_name = settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model
             response = self._client.chat.completions.create(
