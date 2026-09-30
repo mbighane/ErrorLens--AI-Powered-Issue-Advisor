@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from backend.app.config import settings
 from backend.app.services.azure_devops_connector import AzureDevOpsConnector
 from backend.app.services.local_vector_search_service import LocalVectorSearchService
+from backend.app.providers.embedding_providers import AzureEmbeddingProvider
 
 
 def _safe_azure_search_id(raw_value: Any, prefix: str = "bug") -> str:
@@ -26,7 +27,7 @@ def _safe_azure_search_id(raw_value: Any, prefix: str = "bug") -> str:
     return f"{prefix}_{cleaned}" if not cleaned.startswith(f"{prefix}_") else cleaned
 
 
-def _normalize_bug_for_azure_search(bug: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_bug_for_azure_search(bug: Dict[str, Any], vector: List[float]) -> Dict[str, Any]:
     """Map Azure DevOps bug objects into the Azure AI Search document schema."""
     title = bug.get("title") or ""
     description = bug.get("description") or bug.get("content") or ""
@@ -35,6 +36,9 @@ def _normalize_bug_for_azure_search(bug: Dict[str, Any]) -> Dict[str, Any]:
     category = bug.get("category") or "bug"
     original_id = bug.get("id")
     root_cause_analysis = bug.get("root_cause_analysis") or ""
+    searchable_text = "\n".join(
+        part for part in [title, description, root_cause_analysis, bug.get("suggested_fix") or ""] if part
+    )
     return {
         "id": _safe_azure_search_id(original_id if original_id is not None else title or url or len(str(bug)), prefix="bug"),
         "title": title,
@@ -45,6 +49,7 @@ def _normalize_bug_for_azure_search(bug: Dict[str, Any]) -> Dict[str, Any]:
         "url": url,
         "category": category,
         "source": "azure_devops",
+        "contentVector": vector,
     }
 
 
@@ -64,7 +69,20 @@ async def _ingest_to_azure_ai_search(bugs: List[Dict[str, Any]]) -> int:
             credential=AzureKeyCredential(settings.azure_search_api_key),
         )
 
-        documents = [_normalize_bug_for_azure_search(bug) for bug in bugs]
+        embedding_service = AzureEmbeddingProvider()
+        texts = [
+            "\n".join(
+                part for part in [
+                    bug.get("title", ""),
+                    bug.get("description", ""),
+                    bug.get("root_cause_analysis", ""),
+                    bug.get("suggested_fix", ""),
+                ] if part
+            )
+            for bug in bugs
+        ]
+        vectors = embedding_service.embed_texts(texts)
+        documents = [_normalize_bug_for_azure_search(bug, vector) for bug, vector in zip(bugs, vectors)]
         if not documents:
             print("📦 No Azure AI Search documents to upload.")
             return 0
@@ -135,11 +153,11 @@ async def ingest_bugs():
 
     try:
         connector = AzureDevOpsConnector()
-        local_service = LocalVectorSearchService()
+        local_service = LocalVectorSearchService() if settings.is_local_deployment else None
 
-        if local_service.enabled:
+        if local_service is not None and local_service.enabled:
             print("✅ Local vector search enabled — embeddings will be persisted locally.")
-        else:
+        elif local_service is not None:
             print(f"⚠️  Local vector search disabled: {local_service.init_error}")
 
         if settings.azure_search_enabled:
@@ -148,16 +166,15 @@ async def ingest_bugs():
             print("⚠️  Azure AI Search not configured — only local indexing will run.")
 
         # Keep the old variable name so the rest of the script is unchanged.
-        vector_service = local_service
-
         print("  🔎 Fetching the broader Azure DevOps Issue backlog (not limited to a few hard-coded terms)...")
         all_bugs = await _fetch_full_bug_backlog(connector, top_k=250)
         print(f"     ✓ Found {len(all_bugs)} bugs in the backlog")
 
         print(f"\n✅ Total bugs ingested: {len(all_bugs)}")
 
-        indexed_count = vector_service.index_bugs(all_bugs)
-        print(f"📦 Indexed {indexed_count} new bug(s) in local vector store")
+        if local_service is not None:
+            indexed_count = local_service.index_bugs(all_bugs)
+            print(f"📦 Indexed {indexed_count} new bug(s) in local vector store")
 
         azure_indexed_count = await _ingest_to_azure_ai_search(all_bugs)
         print(f"📦 Azure AI Search upload summary: {azure_indexed_count} document(s)")

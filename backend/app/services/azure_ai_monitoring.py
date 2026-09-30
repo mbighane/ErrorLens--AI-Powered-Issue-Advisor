@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from ..config import settings
@@ -16,7 +17,11 @@ class AzureAIMonitoring:
     """Azure Monitor / Application Insights tracing wrapper for app-level telemetry."""
 
     def __init__(self) -> None:
-        self.enabled = bool(settings.azure_monitor_connection_string) and settings.azure_monitor_tracing_enabled
+        self.enabled = (
+            not settings.is_on_prem_deployment
+            and bool(settings.azure_monitor_connection_string)
+            and settings.azure_monitor_tracing_enabled
+        )
         self.trace_name = settings.azure_monitor_trace_name
         self._tracer = None
         self.init_error: Optional[str] = None
@@ -31,6 +36,20 @@ class AzureAIMonitoring:
 
     def trace_event(self, event_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Emit a real Azure Monitor span when tracing is configured; otherwise return local payload."""
+        if settings.is_on_prem_deployment:
+            logging.getLogger("errorlens.telemetry").info(
+                "Local AI telemetry event",
+                extra={
+                    "event_name": event_name,
+                    "event_status": payload.get("status"),
+                    "provider": payload.get("provider"),
+                    "model": payload.get("model"),
+                    "fix_count": payload.get("fix_count"),
+                    "similar_bug_count": payload.get("similar_bug_count"),
+                },
+            )
+            return {"event": event_name, "enabled": False, "payload": payload}
+
         if not self.enabled or self._tracer is None:
             return {"event": event_name, "enabled": False, "payload": payload}
 
@@ -44,7 +63,7 @@ class AzureAIMonitoring:
                     else:
                         span.set_attribute(key, str(value)[:1024])
                 span.set_attribute("ai.service", "errorlens")
-                span.set_attribute("ai.model", settings.azure_openai_chat_deployment or settings.openai_chat_model)
+                span.set_attribute("ai.model", settings.azure_openai_chat_deployment or settings.ollama_chat_model)
                 return {
                     "event": event_name,
                     "enabled": True,

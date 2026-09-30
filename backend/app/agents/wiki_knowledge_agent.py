@@ -5,17 +5,18 @@ Searches lessons learned from Azure DevOps wiki
 
 from typing import Dict, Any, List
 from .base_agent import Agent
-from ..services.ado_wiki_search_service import ADOWikiSearchService
 from ..schemas.issue_schemas import WikiResult
+from ..providers.factory import create_search_provider
+from ..providers.interfaces import ISearchProvider
 
 class WikiKnowledgeAgent(Agent):
     """
     Searches wiki knowledge base for lessons learned and troubleshooting guides
     """
     
-    def __init__(self):
+    def __init__(self, search_provider: ISearchProvider | None = None):
         super().__init__("📘 Wiki Knowledge Agent")
-        self.wiki_service = ADOWikiSearchService()
+        self.search_provider = search_provider or create_search_provider()
     
     async def execute(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         """
@@ -23,7 +24,7 @@ class WikiKnowledgeAgent(Agent):
         """
         try:
             # Search wiki pages
-            wiki_pages_raw = await self.wiki_service.search_wiki_pages(query, top_k)
+            wiki_pages_raw = await self.search_provider.search_wiki(query, top_k)
 
             # Normalize sentinel: services may return the string "no match"
             no_match = False

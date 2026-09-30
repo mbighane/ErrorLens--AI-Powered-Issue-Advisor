@@ -63,6 +63,7 @@ Thumbs.db
 
 # Logs
 *.log
+monitoring/.env
 
 # Data
 data/

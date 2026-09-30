@@ -5,8 +5,9 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ router = APIRouter()
 
 # Project root = three levels up from this file (backend/app/api/admin.py)
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_STARTED_AT = datetime.now(timezone.utc)
 
 
 class RefreshStatus(BaseModel):
@@ -27,6 +29,39 @@ class RefreshStatus(BaseModel):
     wiki_error: Optional[str] = None
     index_age_hours: Optional[float] = None
     message: str
+
+
+class RuntimeInfo(BaseModel):
+    """Configuration reported by the backend process currently serving requests."""
+
+    deployment_mode: Literal["azure", "on_prem"]
+    retrieval_backend: Literal["azure_ai_search", "local_vector_index"]
+    chat_provider: Literal["azure_openai", "ollama", "template"]
+    process_id: int
+    started_at: datetime
+
+
+@router.get("/runtime-info", response_model=RuntimeInfo)
+async def runtime_info():
+    """Expose the actual runtime configuration for the frontend status display."""
+    deployment_mode = "on_prem" if settings.is_on_prem_deployment else "azure"
+    retrieval_backend = (
+        "azure_ai_search" if settings.azure_search_enabled else "local_vector_index"
+    )
+    if settings.is_on_prem_deployment:
+        chat_provider = "ollama"
+    elif settings.use_azure_openai:
+        chat_provider = "azure_openai"
+    else:
+        chat_provider = "template"
+
+    return RuntimeInfo(
+        deployment_mode=deployment_mode,
+        retrieval_backend=retrieval_backend,
+        chat_provider=chat_provider,
+        process_id=os.getpid(),
+        started_at=BACKEND_STARTED_AT,
+    )
 
 
 @router.post("/refresh", response_model=RefreshStatus)

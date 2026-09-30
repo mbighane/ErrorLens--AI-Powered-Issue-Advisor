@@ -6,6 +6,7 @@ from typing import Any, Dict, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langchain_core.runnables import RunnableConfig
 
 from .base_agent import Agent
 from .bug_analysis_agent import BugAnalysisAgent
@@ -13,6 +14,7 @@ from .integration_context_agent import IntegrationContextAgent
 from .recommendation_agent import RecommendationAgent
 from .wiki_knowledge_agent import WikiKnowledgeAgent
 from ..schemas.issue_schemas import IssueSolveResponse
+from ..providers.factory import create_search_provider
 
 
 class WorkflowState(TypedDict, total=False):
@@ -30,8 +32,9 @@ class OrchestratorAgent(Agent):
 
     def __init__(self):
         super().__init__("🧠 Orchestrator Agent")
-        self.bug_agent = BugAnalysisAgent()
-        self.wiki_agent = WikiKnowledgeAgent()
+        search_provider = create_search_provider()
+        self.bug_agent = BugAnalysisAgent(search_provider)
+        self.wiki_agent = WikiKnowledgeAgent(search_provider)
         self.context_agent = IntegrationContextAgent()
         self.recommendation_agent = RecommendationAgent()
         self.graph = self._build_graph()
@@ -66,7 +69,7 @@ class OrchestratorAgent(Agent):
             "user_id": user_id,
             "errors": [],
         }
-        config = {"configurable": {"thread_id": f"issue-{user_id}"}}
+        config: RunnableConfig = {"configurable": {"thread_id": f"issue-{user_id}"}}
         result = await self.graph.ainvoke(state, config=config)
         if result.get("response"):
             return result["response"]
@@ -82,19 +85,19 @@ class OrchestratorAgent(Agent):
 
     async def _node_bug_analysis(self, state: WorkflowState) -> WorkflowState:
         try:
-            return {"bug_analysis": await self.bug_agent.execute(state["user_query"]) }
+            return {"bug_analysis": await self.bug_agent.execute(state.get("user_query", "")) }
         except Exception as exc:
             return {"bug_analysis": {}, "errors": [*state.get("errors", []), f"bug_analysis: {exc}"]}
 
     async def _node_wiki_knowledge(self, state: WorkflowState) -> WorkflowState:
         try:
-            return {"wiki_knowledge": await self.wiki_agent.execute(state["user_query"]) }
+            return {"wiki_knowledge": await self.wiki_agent.execute(state.get("user_query", "")) }
         except Exception as exc:
             return {"wiki_knowledge": {}, "errors": [*state.get("errors", []), f"wiki_knowledge: {exc}"]}
 
     async def _node_context_analysis(self, state: WorkflowState) -> WorkflowState:
         try:
-            return {"context_analysis": await self.context_agent.execute(state["user_query"]) }
+            return {"context_analysis": await self.context_agent.execute(state.get("user_query", "")) }
         except Exception as exc:
             return {"context_analysis": {}, "errors": [*state.get("errors", []), f"context_analysis: {exc}"]}
 
@@ -104,7 +107,7 @@ class OrchestratorAgent(Agent):
                 bug_analysis=state.get("bug_analysis", {}),
                 wiki_knowledge=state.get("wiki_knowledge", {}),
                 integration_context=state.get("context_analysis", {}),
-                original_query=state["user_query"],
+                original_query=state.get("user_query", ""),
             )
             return {"recommendations": recommendations}
         except Exception as exc:
@@ -112,7 +115,7 @@ class OrchestratorAgent(Agent):
 
     async def _node_assemble_response(self, state: WorkflowState) -> WorkflowState:
         response = self._assemble_response(
-            query=state["user_query"],
+            query=state.get("user_query", ""),
             bug_analysis=state.get("bug_analysis", {}),
             wiki_knowledge=state.get("wiki_knowledge", {}),
             context_analysis=state.get("context_analysis", {}),
@@ -147,6 +150,7 @@ class OrchestratorAgent(Agent):
             relevant_wiki=wiki_knowledge.get("wiki_pages", []),
             root_causes=recommendations.get("root_causes", []),
             suggested_fixes=recommendations.get("suggested_fixes", []),
+            model_info=recommendations.get("model_info"),
         )
     
     def _build_analysis_text(self,

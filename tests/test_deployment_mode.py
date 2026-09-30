@@ -19,4 +19,4 @@ def test_on_prem_mode_disables_azure_and_enables_ollama(monkeypatch):
     assert settings.use_azure_openai is False
     assert settings.azure_search_enabled is False
     assert settings.ollama_enabled is True
-    assert settings.should_use_local_only is True
+    assert settings.is_on_prem_deployment is True

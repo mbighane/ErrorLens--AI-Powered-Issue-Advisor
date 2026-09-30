@@ -1,5 +1,5 @@
 """
-Local vector search service using OpenAI embeddings + numpy cosine similarity.
+Local vector search service using Ollama/Azure OpenAI embeddings + numpy cosine similarity.
 
 Embeddings and metadata are persisted as .npy / .json file pairs under
 settings.vector_index_dir so the index survives application restarts without
@@ -31,8 +31,12 @@ from ..config import settings
 from .azure_ai_monitoring import AzureAIMonitoring
 from .ollama_client import OllamaClient
 
-_EMBEDDING_MODEL = settings.azure_openai_embedding_deployment if settings.use_azure_openai else "text-embedding-3-small"
-_EMBEDDING_DIMS  = 1536
+if settings.is_on_prem_deployment:
+    _EMBEDDING_MODEL = settings.ollama_embedding_model
+    _EMBEDDING_DIMS = settings.ollama_embedding_dims
+else:
+    _EMBEDDING_MODEL = settings.azure_openai_embedding_deployment
+    _EMBEDDING_DIMS = settings.azure_openai_embedding_dims
 
 import re as _re
 
@@ -79,12 +83,17 @@ class LocalVectorSearchService:
         self._wiki_emb_path  = index_dir / "wiki_embeddings.npy"
         self._wiki_meta_path = index_dir / "wiki_metadata.json"
 
+        self._using_ollama = False
+
         try:
-            if settings.should_use_local_only:
-                self._ollama_client = OllamaClient(settings.ollama_base_url)
-                self._using_ollama = self._ollama_client.is_available()
-                if not self._using_ollama:
-                    print("[LocalVectorSearch] Ollama not available in on-prem mode; local vector index will still load but LLM-based expansion is disabled.")
+            if settings.is_on_prem_deployment:
+                # Local deployment mode: Ollama only, no cloud fallback —
+                # matches the "no data leaves the local server" guarantee.
+                self._client = OpenAI(
+                    base_url=settings.ollama_base_url,
+                    api_key=settings.ollama_api_key,
+                )
+                self._using_ollama = True
             elif settings.use_azure_openai and settings.azure_openai_api_key and settings.azure_openai_endpoint:
                 self._azure_client = AzureOpenAI(
                     api_key=settings.azure_openai_api_key,
@@ -93,40 +102,12 @@ class LocalVectorSearchService:
                 )
                 self._client = self._azure_client
                 self._using_azure_openai = True
-            elif settings.openai_api_key:
-                self._client = OpenAI(api_key=settings.openai_api_key)
-            elif settings.ollama_enabled:
-                self._ollama_client = OllamaClient(settings.ollama_base_url)
-                self._using_ollama = self._ollama_client.is_available()
             else:
-                raise ValueError("No OpenAI, Azure OpenAI, or Ollama credentials configured — local vector search disabled")
+                raise ValueError("No Azure OpenAI or Ollama credentials configured — local vector search disabled")
             index_dir.mkdir(parents=True, exist_ok=True)
             self.enabled = True
         except Exception as exc:
             self.init_error = str(exc)
-
-    def _should_fallback_to_openai(self, exc: Exception) -> bool:
-        message = str(exc).lower()
-        return (
-            settings.openai_api_key is not None
-            and settings.openai_api_key != ""
-            and self._using_azure_openai
-            and (
-                "404" in message
-                or "resource not found" in message
-                or "deployment" in message.lower()
-                or "model not found" in message.lower()
-            )
-        )
-
-    def _ensure_openai_fallback(self, exc: Exception) -> bool:
-        if not self._should_fallback_to_openai(exc):
-            return False
-
-        print("[LocalVectorSearch] Azure OpenAI deployment unavailable, falling back to OpenAI API.")
-        self._using_azure_openai = False
-        self._client = OpenAI(api_key=settings.openai_api_key)
-        return True
 
     # ------------------------------------------------------------------
     # Status helpers
@@ -143,29 +124,21 @@ class LocalVectorSearchService:
     # ------------------------------------------------------------------
 
     def _embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed a batch of texts with a single Azure/OpenAI or local Ollama call."""
+        """Embed a batch of texts through Ollama or Azure OpenAI."""
         cleaned = [_truncate(t) or " " for t in texts]
 
-        if self._using_ollama and self._ollama_client is not None:
-            if not self._ollama_client.is_available():
-                raise RuntimeError("Ollama is not available for embeddings")
-            return self._ollama_client.embed_texts(cleaned, model=settings.ollama_embedding_model)
-
-        embedding_model = settings.azure_openai_embedding_deployment if self._using_azure_openai else _EMBEDDING_MODEL
-        try:
+        if self._using_ollama:
             response = self._client.embeddings.create(
                 input=cleaned,
-                model=embedding_model,
+                model=settings.ollama_embedding_model,
             )
             return [item.embedding for item in response.data]
-        except Exception as exc:
-            if self._ensure_openai_fallback(exc):
-                response = self._client.embeddings.create(
-                    input=cleaned,
-                    model="text-embedding-3-small",
-                )
-                return [item.embedding for item in response.data]
-            raise
+
+        response = self._client.embeddings.create(
+            input=cleaned,
+            model=settings.azure_openai_embedding_deployment,
+        )
+        return [item.embedding for item in response.data]
 
     def _embed_query(self, query: str) -> np.ndarray:
         expanded = self._expand_query(query)
@@ -222,7 +195,10 @@ class LocalVectorSearchService:
                 return query
 
         try:
-            model_name = settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model
+            if self._using_ollama:
+                model_name = settings.ollama_chat_model
+            else:
+                model_name = settings.azure_openai_chat_deployment
             response = self._client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -249,42 +225,17 @@ class LocalVectorSearchService:
                     "expanded_query": expanded,
                 },
             )
-            print(f"[VectorSearch] Query expanded: '{query}' -> '{expanded}'")
+            print(
+                f"[VectorSearch] Query expanded "
+                f"(input_chars={len(query)}, output_chars={len(expanded)})."
+            )
             return expanded
         except Exception as exc:
-            if self._ensure_openai_fallback(exc):
-                response = self._client.chat.completions.create(
-                    model=settings.openai_chat_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a technical search assistant. "
-                                "Given a bug report query, rewrite it as a concise technical search string "
-                                "using plain, likely search terms. Keep it under 35 words. Return only the expanded text, no explanation."
-                            ),
-                        },
-                        {"role": "user", "content": query},
-                    ],
-                    temperature=settings.query_expansion_temperature,
-                    max_tokens=settings.query_expansion_max_tokens,
-                )
-                expanded = response.choices[0].message.content.strip()
-                monitoring.trace_event(
-                    "vector_query_expansion",
-                    {
-                        "status": "success",
-                        "model": settings.openai_chat_model,
-                        "query": query,
-                        "expanded_query": expanded,
-                    },
-                )
-                return expanded
             monitoring.trace_event(
                 "vector_query_expansion",
                 {
                     "status": "error",
-                    "model": settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model,
+                    "model": settings.ollama_chat_model if self._using_ollama else settings.azure_openai_chat_deployment,
                     "query": query,
                     "error": str(exc),
                 },
@@ -371,7 +322,10 @@ class LocalVectorSearchService:
         """
         monitoring = AzureAIMonitoring()
         try:
-            model_name = settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model
+            if self._using_ollama:
+                model_name = settings.ollama_chat_model
+            else:
+                model_name = settings.azure_openai_chat_deployment
             response = self._client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -402,46 +356,17 @@ class LocalVectorSearchService:
                     "expanded_query": expanded,
                 },
             )
-            print(f"[VectorSearch] Wiki query expanded: '{query}' -> '{expanded}'")
+            print(
+                f"[VectorSearch] Wiki query expanded "
+                f"(input_chars={len(query)}, output_chars={len(expanded)})."
+            )
             return expanded
         except Exception as exc:
-            if self._ensure_openai_fallback(exc):
-                response = self._client.chat.completions.create(
-                    model=settings.openai_chat_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a technical documentation search assistant. "
-                                "Given a query about a software issue, rewrite it as a focused search string "
-                                "suited for finding wiki pages, lessons learned, troubleshooting guides, "
-                                "and runbooks. Focus on the specific symptom and its closest technical domain. "
-                                "Do NOT add generic infrastructure, database, or platform terms unless they "
-                                "are central to the symptom itself. "
-                                "Keep it under 40 words. Return only the expanded text, no explanation."
-                            ),
-                        },
-                        {"role": "user", "content": query},
-                    ],
-                    temperature=settings.query_expansion_temperature,
-                    max_tokens=settings.query_expansion_max_tokens,
-                )
-                expanded = response.choices[0].message.content.strip()
-                monitoring.trace_event(
-                    "wiki_query_expansion",
-                    {
-                        "status": "success",
-                        "model": settings.openai_chat_model,
-                        "query": query,
-                        "expanded_query": expanded,
-                    },
-                )
-                return expanded
             monitoring.trace_event(
                 "wiki_query_expansion",
                 {
                     "status": "error",
-                    "model": settings.azure_openai_chat_deployment if self._using_azure_openai else settings.openai_chat_model,
+                    "model": settings.ollama_chat_model if self._using_ollama else settings.azure_openai_chat_deployment,
                     "query": query,
                     "error": str(exc),
                 },
@@ -564,7 +489,7 @@ class LocalVectorSearchService:
     def score_bugs_in_memory(self, query: str, bugs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Compute semantic similarity scores for a list of bug dicts in-memory using
-        OpenAI embeddings. Does NOT require a pre-built index on disk.
+        Ollama/Azure OpenAI embeddings. Does NOT require a pre-built index on disk.
         Returns the same bugs sorted by descending semantic score, with
         'similarity_score' set to the cosine similarity value.
         """
@@ -659,7 +584,7 @@ class LocalVectorSearchService:
 
             print(f"[VectorSearch] Pass-1 top-{len(top_bugs)} bugs used for context:")
             for i in ranked_indices:
-                print(f"  pass1={pass1_scores[i]:.4f} | {bugs[i].get('title', '')}")
+                print(f"  rank={i + 1} | pass1={pass1_scores[i]:.4f}")
 
             # ── BUILD ENRICHED QUERY ─────────────────────────────────────
             context_lines: List[str] = []
@@ -672,7 +597,7 @@ class LocalVectorSearchService:
             enriched_query = _truncate(
                 f"{expanded_query}. Context from similar bugs: {context_block}"
             )
-            print(f"[VectorSearch] Enriched query (first 200 chars):\n  {enriched_query[:200]}...")
+            print(f"[VectorSearch] Enriched query built (chars={len(enriched_query)}).")
 
             # ── PASS 2: rescore ALL bugs with enriched query ─────────────
             pass2_texts   = [enriched_query] + bug_texts   # reuse bug_texts from pass 1

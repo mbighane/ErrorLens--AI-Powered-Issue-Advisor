@@ -5,8 +5,8 @@ Queries Azure DevOps for similar bugs, extracts root causes and fixes
 
 from typing import Dict, Any, List
 from .base_agent import Agent
-from ..services.ado_bug_search_service import ADOBugSearchService
-from ..schemas.issue_schemas import BugResult
+from ..providers.factory import create_search_provider
+from ..providers.interfaces import ISearchProvider
 
 class BugAnalysisAgent(Agent):
     """
@@ -17,9 +17,9 @@ class BugAnalysisAgent(Agent):
     - Applied fixes
     """
     
-    def __init__(self):
+    def __init__(self, search_provider: ISearchProvider | None = None):
         super().__init__("🔍 Bug Analysis Agent")
-        self.bug_service = ADOBugSearchService()
+        self.search_provider = search_provider or create_search_provider()
     
     async def execute(self, query: str, top_k: int = 5) -> Dict[str, Any]:
         """
@@ -27,15 +27,17 @@ class BugAnalysisAgent(Agent):
         """
         try:
             # Search for similar bugs
-            similar_bugs_raw = await self.bug_service.search_similar_bugs(query, top_k)
+            similar_bugs_raw = await self.search_provider.search_bugs(query, top_k)
 
             # Normalize sentinel: services may return the string "no match"
             no_match = False
             if isinstance(similar_bugs_raw, str) and similar_bugs_raw == "no match":
                 similar_bugs = []
                 no_match = True
+            elif isinstance(similar_bugs_raw, list):
+                similar_bugs = similar_bugs_raw
             else:
-                similar_bugs = similar_bugs_raw or []
+                similar_bugs = []
 
             # Extract root causes from bug titles and descriptions
             root_causes = self._extract_root_causes_from_bugs(similar_bugs)
@@ -62,7 +64,7 @@ class BugAnalysisAgent(Agent):
                 "fixes": []
             }
     
-    def _extract_root_causes_from_bugs(self, bugs: List[BugResult]) -> List[str]:
+    def _extract_root_causes_from_bugs(self, bugs: List[Any]) -> List[str]:
         """
         Extract common root causes from bug data
         """
@@ -87,7 +89,7 @@ class BugAnalysisAgent(Agent):
         
         return list(root_causes)
     
-    def _extract_fixes_from_bugs(self, bugs: List[BugResult]) -> List[str]:
+    def _extract_fixes_from_bugs(self, bugs: List[Any]) -> List[str]:
         """
         Extract common fixes/solutions from resolved bugs
         """

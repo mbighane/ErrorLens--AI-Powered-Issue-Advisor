@@ -1,0 +1,56 @@
+services:
+  loki:
+    image: grafana/loki:3.5.0
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    networks:
+      - telemetry
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in monitoring/.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - telemetry
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.10.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - type: bind
+        source: ${ERRORLENS_LOG_DIR:-C:/ProgramData/ErrorLens/logs}
+        target: /var/log/errorlens
+        read_only: true
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - telemetry
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+networks:
+  telemetry:
+
+volumes:
+  loki-data:
+  grafana-data:
+  alloy-data:

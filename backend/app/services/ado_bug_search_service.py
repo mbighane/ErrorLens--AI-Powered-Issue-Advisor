@@ -14,14 +14,13 @@ class ADOBugSearchService:
     
     def __init__(self):
         self.hybrid_service = HybridBugSearchService()
-        self.local_vector_service = self.hybrid_service.local_vector_service
 
     async def search_similar_bugs(self, query: str, top_k: int = 5) -> Union[List[BugResult], str]:
         """
         Search for similar issues in Azure DevOps using HYBRID search.
         
         Hybrid Search Strategy:
-          1. Semantic Search (parallel): OpenAI embeddings + cosine similarity
+          1. Semantic Search (parallel): Ollama/Azure OpenAI embeddings + cosine similarity
           2. Exact Match Search (parallel): Keyword/theme matching via WIQL
           3. Merge & Rank: Combined scoring with RRF + weighted fusion
           

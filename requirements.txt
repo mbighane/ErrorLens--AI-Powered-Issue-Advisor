@@ -7,6 +7,8 @@ llama-index-embeddings-openai==0.6.0
 langgraph==0.2.55
 python-dotenv==1.0.0
 azure-devops==7.1.0b4
+azure-monitor-opentelemetry==1.8.10
+azure-search-documents==11.5.2
 pytest==7.4.3
 pytest-asyncio==0.21.1
 setuptools==80.9.0

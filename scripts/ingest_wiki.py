@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from backend.app.config import settings
 from backend.app.services.azure_devops_connector import AzureDevOpsConnector
 from backend.app.services.local_vector_search_service import LocalVectorSearchService
+from backend.app.providers.embedding_providers import AzureEmbeddingProvider
 
 
 def _safe_azure_search_id(raw_value: Any, prefix: str = "wiki") -> str:
@@ -26,7 +27,7 @@ def _safe_azure_search_id(raw_value: Any, prefix: str = "wiki") -> str:
     return f"{prefix}_{cleaned}" if not cleaned.startswith(f"{prefix}_") else cleaned
 
 
-def _normalize_wiki_for_azure_search(page: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_wiki_for_azure_search(page: Dict[str, Any], vector: List[float]) -> Dict[str, Any]:
     """Map Azure DevOps wiki page objects into the Azure AI Search document schema."""
     title = page.get("title") or ""
     content = page.get("content") or page.get("text") or ""
@@ -41,6 +42,7 @@ def _normalize_wiki_for_azure_search(page: Dict[str, Any]) -> Dict[str, Any]:
         "url": url,
         "category": "wiki",
         "source": "azure_devops_wiki",
+        "contentVector": vector,
     }
 
 
@@ -60,7 +62,13 @@ async def _ingest_to_azure_ai_search(pages: List[Dict[str, Any]]) -> int:
             credential=AzureKeyCredential(settings.azure_search_api_key),
         )
 
-        documents = [_normalize_wiki_for_azure_search(page) for page in pages]
+        embedding_service = AzureEmbeddingProvider()
+        texts = [
+            "\n".join(part for part in [page.get("title", ""), page.get("content", "")] if part)
+            for page in pages
+        ]
+        vectors = embedding_service.embed_texts(texts)
+        documents = [_normalize_wiki_for_azure_search(page, vector) for page, vector in zip(pages, vectors)]
         if not documents:
             print("📦 No Azure AI Search wiki documents to upload.")
             return 0
@@ -172,11 +180,11 @@ async def ingest_wiki():
 
     try:
         connector = AzureDevOpsConnector()
-        local_service = LocalVectorSearchService()
+        local_service = LocalVectorSearchService() if settings.is_local_deployment else None
 
-        if local_service.enabled:
+        if local_service is not None and local_service.enabled:
             print("✅ Local vector search enabled — embeddings will be persisted locally.")
-        else:
+        elif local_service is not None:
             print(f"⚠️  Local vector search disabled: {local_service.init_error}")
 
         if settings.azure_search_enabled:
@@ -185,16 +193,15 @@ async def ingest_wiki():
             print("⚠️  Azure AI Search not configured — only local indexing will run.")
 
         # Keep the old variable name so the rest of the script is unchanged.
-        vector_service = local_service
-
         print("  🔎 Fetching the broader Azure DevOps wiki backlog (not limited to a few hard-coded terms)...")
         all_wiki_pages = await _fetch_full_wiki_backlog(connector, top_k=250)
         print(f"     ✓ Found {len(all_wiki_pages)} wiki pages in the backlog")
 
         print(f"\n✅ Total wiki pages ingested: {len(all_wiki_pages)}")
 
-        indexed_count = vector_service.index_wiki_pages(all_wiki_pages)
-        print(f"📦 Indexed {indexed_count} new wiki page(s) in local vector store")
+        if local_service is not None:
+            indexed_count = local_service.index_wiki_pages(all_wiki_pages)
+            print(f"📦 Indexed {indexed_count} new wiki page(s) in local vector store")
 
         azure_indexed_count = await _ingest_to_azure_ai_search(all_wiki_pages)
         print(f"📦 Azure AI Search upload summary: {azure_indexed_count} document(s)")

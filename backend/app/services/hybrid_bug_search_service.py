@@ -12,7 +12,7 @@ Strategy:
 
 import asyncio
 import re
-from typing import List, Dict, Any, Union, Tuple
+from typing import List, Dict, Any, Union, Tuple, Optional
 from ..schemas.issue_schemas import BugResult
 from .local_vector_search_service import LocalVectorSearchService
 from .azure_ai_search_service import AzureAISearchService
@@ -36,7 +36,9 @@ class HybridBugSearchService:
     """
 
     def __init__(self):
-        self.local_vector_service = LocalVectorSearchService()
+        self.local_vector_service: Optional[LocalVectorSearchService] = (
+            LocalVectorSearchService() if settings.is_on_prem_deployment else None
+        )
         self.azure_ai_search_service = AzureAISearchService()
         self.connector = AzureDevOpsConnector()
 
@@ -75,6 +77,10 @@ class HybridBugSearchService:
             semantic_results = []
         if isinstance(exact_match_results, str) and exact_match_results == "no match":
             exact_match_results = []
+        if not isinstance(semantic_results, list):
+            semantic_results = []
+        if not isinstance(exact_match_results, list):
+            exact_match_results = []
 
         # 2. Merge results using RRF + weighted scoring
         merged_bugs = self._merge_and_rank_results(
@@ -105,7 +111,7 @@ class HybridBugSearchService:
 
         if settings.azure_search_enabled and self.azure_ai_search_service.enabled:
             try:
-                bugs = self.azure_ai_search_service.search(query, top_k)
+                bugs = self.azure_ai_search_service.search(query, top_k, category="bug")
                 if bugs:
                     for bug in bugs:
                         bug.setdefault("source", "azure_ai_search")
@@ -115,7 +121,7 @@ class HybridBugSearchService:
                 print(f"[HybridSearch] Semantic: Azure AI Search failed: {exc}")
                 bugs = []
 
-        if self.local_vector_service.has_bugs_indexed():
+        if settings.is_on_prem_deployment and self.local_vector_service is not None and self.local_vector_service.has_bugs_indexed():
             try:
                 bugs = self.local_vector_service.search_bugs(query, top_k)
                 if bugs:
@@ -230,7 +236,7 @@ class HybridBugSearchService:
 
         # Process semantic results
         for rank, bug in enumerate(semantic_bugs, 1):
-            bug_id = bug.get("id")
+            bug_id = self._canonical_bug_id(bug.get("id"))
             if bug_id not in bug_map:
                 bug_map[bug_id] = {}
             
@@ -243,7 +249,7 @@ class HybridBugSearchService:
 
         # Process exact match results
         for rank, bug in enumerate(exact_match_bugs, 1):
-            bug_id = bug.get("id")
+            bug_id = self._canonical_bug_id(bug.get("id"))
             if bug_id not in bug_map:
                 bug_map[bug_id] = {}
             
@@ -283,6 +289,13 @@ class HybridBugSearchService:
         print(f"[HybridSearch] Merged {len(ranked_bugs)} unique bugs from both approaches")
         return ranked_bugs
 
+    @staticmethod
+    def _canonical_bug_id(value: Any) -> str:
+        """Use the ADO work-item ID as the merge key across search providers."""
+        raw_id = str(value or "").strip()
+        match = re.fullmatch(r"(?:bug_)?(\d+)", raw_id, flags=re.IGNORECASE)
+        return match.group(1) if match else raw_id
+
     def _filter_by_threshold(
         self,
         bugs: List[Dict[str, Any]],
@@ -299,6 +312,10 @@ class HybridBugSearchService:
             title = str(bug.get("title", ""))
             exact_match_score = float(bug.get("exact_match_score", 0.0))
             title_overlap = self._title_overlap_score(query, title)
+            azure_semantic_match = (
+                bug.get("azure_reranker_score") is not None
+                and score >= settings.search_similarity_threshold
+            )
 
             # Keep genuinely relevant exact matches even when the semantic score is low.
             query_norm = self._normalize_text(query)
@@ -317,6 +334,7 @@ class HybridBugSearchService:
                     score >= settings.search_similarity_threshold
                     and title_overlap >= settings.semantic_title_overlap_min_score
                 )
+                or azure_semantic_match
             ):
                 filtered.append(bug)
 
@@ -353,7 +371,12 @@ class HybridBugSearchService:
         Index newly discovered bugs so subsequent queries hit vector search.
         Runs in background without blocking response.
         """
-        if not bugs or not self.local_vector_service.enabled:
+        if (
+            not bugs
+            or not settings.is_on_prem_deployment
+            or self.local_vector_service is None
+            or not self.local_vector_service.enabled
+        ):
             return
 
         try:

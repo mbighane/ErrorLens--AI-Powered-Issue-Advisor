@@ -8,7 +8,9 @@ from ..config import settings
 class ADOWikiSearchService:
     def __init__(self):
         self.connector = AzureDevOpsConnector()
-        self.local_vector_service = LocalVectorSearchService()
+        self.local_vector_service = (
+            LocalVectorSearchService() if settings.is_on_prem_deployment else None
+        )
         self.azure_ai_search_service = AzureAISearchService()
 
     async def search_wiki_pages(self, query: str, top_k: int = 10) -> Union[List[WikiResult], str]:
@@ -16,7 +18,7 @@ class ADOWikiSearchService:
         Search for relevant wiki pages in Azure DevOps.
         Priority:
           1. Azure AI Search (managed semantic retrieval when configured)
-          2. Local vector index (OpenAI embeddings + numpy cosine similarity)
+          2. Local vector index (Ollama + numpy cosine similarity)
           3. ADO git-based wiki search (always available)
         Wiki pages fetched from ADO are automatically indexed locally for future queries.
         """
@@ -25,7 +27,7 @@ class ADOWikiSearchService:
         # 1. Azure AI Search — preferred when configured.
         if settings.azure_search_enabled and self.azure_ai_search_service.enabled:
             try:
-                wiki_pages = self.azure_ai_search_service.search(query, top_k)
+                wiki_pages = self.azure_ai_search_service.search(query, top_k, category="wiki")
                 if wiki_pages:
                     wiki_pages = [max(wiki_pages, key=lambda p: p.get("similarity_score", 0))]
                     wiki_pages[0].setdefault("source", "azure_ai_search")
@@ -35,7 +37,11 @@ class ADOWikiSearchService:
                 wiki_pages = []
 
         # 2. Local vector search — preferred when index has been seeded.
-        if not wiki_pages and self.local_vector_service.has_wiki_indexed():
+        if (
+            settings.is_on_prem_deployment
+            and self.local_vector_service is not None
+            and self.local_vector_service.has_wiki_indexed()
+        ):
             try:
                 wiki_pages = self.local_vector_service.search_wiki_pages(query, top_k)
                 # Keep only the highest-scoring result to avoid surfacing loosely
@@ -54,7 +60,7 @@ class ADOWikiSearchService:
                 return "no match"
             wiki_pages = await self.connector.search_wiki_pages(query, top_k)
             # Lazily index fetched pages so subsequent queries hit vector search.
-            if wiki_pages:
+            if wiki_pages and settings.is_on_prem_deployment and self.local_vector_service is not None:
                 try:
                     newly_indexed = self.local_vector_service.index_wiki_pages(wiki_pages)
                     if newly_indexed:
